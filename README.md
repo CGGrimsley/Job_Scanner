@@ -4,6 +4,8 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 
 - **Fit stamps on every card** as you scroll a search: *Apply 78*, *Consider 55*, *Skip 24*.
 - **A panel in the corner** for the posting you have open, with Claude's assessment, realistic odds, strengths, gaps, red flags and résumé tips, plus buttons to save it or mark it applied.
+- **Cover letters** for any job, from the panel or the app. Choose which résumé to base one on (Claude picks the best match by default) and a tone, then copy or download it.
+- **Several résumés.** Claude reads them all as evidence of what you've done, and it tells you which one to send for each job.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
 It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. LinkedIn and Indeed forbid automated scraping in their terms, so it works the way you browse and nothing more.
@@ -15,7 +17,7 @@ The guidance is meant to be objective, not encouraging:
 - Claude judges you only on what your résumé and About Me actually show. A requirement your résumé doesn't show counts as unmet.
 - Scores are calibrated the way a recruiter would screen applicants: most postings land between 30 and 70, and 80+ is rare. Thin information lowers the score and the stated confidence. It never raises them.
 - The app holds Claude to its own rubric. The overall score can't run more than 10 points past how well you meet the requirements. A low-confidence read can't say *Apply*, and a dealbreaker gap always reads *Skip*.
-- Tailored résumé bullets and cover letters only reword experience you really have. Nothing is invented.
+- Tailored résumé bullets and cover letters only reword experience you really have. Nothing is invented, and a requirement you don't meet is left out of a letter rather than papered over.
 - The quick score on search cards is labelled for what it is: a match to your stated preferences, not a judgement of your chances. A card on its own never scores above 75.
 
 ## Install
@@ -24,7 +26,7 @@ You need Python 3.9+, Chrome, and (for the AI guidance) a Claude Pro or Max subs
 
 1. **Get the code:** clone this repo, or download it as a ZIP and unzip it.
 2. **Start the app:** double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux). You can also run `python -m job_scanner serve --open`. The app opens at http://127.0.0.1:8766.
-3. **Fill in your Profile:** the roles you want, your skills, locations, minimum pay, and your résumé (paste it, or upload a PDF, Word or text file) and About Me. The more Claude knows, the better its advice.
+3. **Fill in your Profile, résumé first.** Upload or paste your résumé (PDF, Word or text). If you keep several targeted versions, add them all. Claude suggests job titles and skills from them, and you can edit those and add your own. Then pick your locations: start typing a city or state and choose it from the list. Finish with your minimum pay, your dealbreakers and your About Me. The more Claude knows, the better its advice.
 4. **Set up Claude on your subscription:**
    - Install Claude Code: `npm install -g @anthropic-ai/claude-code` (or the installer from claude.com/claude-code).
    - Run `claude` once in a terminal and sign in with your Claude account.
@@ -35,7 +37,7 @@ Then browse jobs as usual.
 
 ## How Claude is used, and how much
 
-Job Scanner runs Claude Code on your computer (`claude -p`), so its work counts against your Claude plan's usage, not a separate bill. Your `ANTHROPIC_API_KEY`, if you have one, is removed from those calls so a pay-as-you-go key is never used by accident.
+Job Scanner runs Claude Code on your computer (`claude -p`). On Windows it starts the real `claude.exe` behind npm's `claude.cmd`, so it works whether you installed with npm or the installer. Its work counts against your Claude plan's usage, not a separate bill. Your `ANTHROPIC_API_KEY`, if you have one, is removed from those calls so a pay-as-you-go key is never used by accident.
 
 - When you **open a posting**, Claude reads it automatically, but only if the quick score is at least 40 (adjustable).
 - There's a **daily cap** on automatic calls (60 by default). Set both on the Setup page.
@@ -61,6 +63,10 @@ Sites change their pages often. If a site stops being read properly, open a sear
 ## Your data
 
 Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json` and `ai_usage.json`. Nothing personal is ever written into the repo.
+
+## Credits
+
+The place names in the location picker come from [GeoNames](https://www.geonames.org/) (CC BY 4.0), via the geonamescache package. They're bundled, so the picker works offline.
 
 ## Commands
 

@@ -42,11 +42,30 @@ def _cli_ready() -> bool:
     return not os.environ.get("JOB_SCANNER_CLI_NEEDS_TOKEN") or bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
 
 
+def claude_command() -> list | None:
+    """How to launch Claude Code. On Windows npm installs a claude.cmd shim, which subprocess can't start by name and
+    which would pass our arguments through cmd.exe (mangling quotes and newlines), so the real claude.exe (or the
+    CLI script under node) beside it is used instead."""
+    found = shutil.which("claude")
+    if not found:
+        return None
+    if os.name == "nt" and found.lower().endswith((".cmd", ".bat", ".ps1")):
+        pkg = os.path.join(os.path.dirname(found), "node_modules", "@anthropic-ai", "claude-code")
+        exe = os.path.join(pkg, "bin", "claude.exe")
+        if os.path.isfile(exe):
+            return [exe]
+        script = os.path.join(pkg, "cli.js")
+        node = shutil.which("node")
+        if node and os.path.isfile(script):
+            return [node, script]
+    return [found]
+
+
 def backend() -> str | None:
     choice = os.environ.get("JOB_SCANNER_AI", "auto").lower()
     if choice == "off":
         return None
-    if choice in ("cli", "auto") and shutil.which("claude") and _cli_ready():
+    if choice in ("cli", "auto") and claude_command() and _cli_ready():
         return "cli"
     if choice == "api" or (choice == "auto" and os.environ.get("ANTHROPIC_API_KEY")):
         try:
@@ -125,7 +144,7 @@ def ask_json(system: str, prompt: str, schema: dict, kind: str = "other", files:
 
 def _cli(system: str, prompt: str, schema: dict, kind: str, files: dict | None) -> dict:
     """`files` ({name: bytes}) are written into the temp folder and Claude may Read only those (a résumé PDF)."""
-    cmd = ["claude", "-p", "Follow the system prompt. The request and data are on stdin.",
+    cmd = (claude_command() or ["claude"]) + ["-p", "Follow the system prompt. The request and data are on stdin.",
            "--output-format", "json", "--json-schema", json.dumps(schema), "--system-prompt", system,
            "--tools", "Read" if files else ""]
     if files:
@@ -243,6 +262,8 @@ ANALYSIS_SCHEMA = {
                       "description": "Concerns about the posting or employer: vague duties, unpaid trials, ghost-job signs, pay below market, scams."},
         "preference_conflicts": {"type": "array", "items": {"type": "string"},
                                  "description": "Where the job conflicts with what they said they want (location, pay, level, dealbreakers)."},
+        "best_resume": {"type": "string",
+                        "description": "With several résumés, the name of the one to send for this posting and why, in one sentence. Empty with one or none."},
         "resume_tips": {"type": "array", "items": {"type": "string"},
                         "description": "What to move up, reword or add on the résumé for this posting."},
         "tailored_bullets": {"type": "array", "items": {"type": "string"},
@@ -253,7 +274,7 @@ ANALYSIS_SCHEMA = {
         "salary_note": {"type": "string", "description": "What the pay looks like for this role and area, if you can say."},
     },
     "required": ["fit_score", "qualification_score", "confidence", "interview_odds", "verdict", "summary", "strengths", "gaps", "red_flags", "preference_conflicts",
-                 "resume_tips", "tailored_bullets", "keywords", "questions_to_ask", "salary_note"],
+                 "best_resume", "resume_tips", "tailored_bullets", "keywords", "questions_to_ask", "salary_note"],
     "additionalProperties": False,
 }
 
@@ -282,7 +303,8 @@ def analyze_job(job: dict, profile_text: str) -> dict:
               "verdict: Apply only if fit_score is 70+ and there is no dealbreaker or missing hard requirement; Skip "
               "under 45 or with a dealbreaker; otherwise Consider.\n"
               "If the résumé is missing or very short, or only a search card was captured, set confidence low and "
-              "say what's missing in the summary. Keep each list short (at most 5 items, fewest that matter).")
+              "say what's missing in the summary. With several résumés, judge from all of them together, name the "
+              "one to send in best_resume, and aim resume_tips and tailored_bullets at that one. Keep each list short (at most 5 items, fewest that matter).")
     out = ask_json(COACH, prompt, ANALYSIS_SCHEMA, kind="analyze")
     for k in ("fit_score", "qualification_score"):
         try:
@@ -307,11 +329,22 @@ LETTER_SCHEMA = {"type": "object", "properties": {"letter": {"type": "string"}},
                  "additionalProperties": False}
 
 
-def cover_letter(job: dict, profile_text: str, notes: str = "") -> str:
-    prompt = ("Write a cover letter for this person and posting. Under 300 words, three or four short paragraphs, "
-              "in their voice (use the About Me for tone), specific about why this company and role, drawing only "
-              "on real experience from the résumé. Never claim a skill, result or credential the résumé and About Me don't show, and don't overstate what they do show. No clichés ('I am writing to express my interest'), no "
-              "placeholders except [Hiring Manager] if no name is known. Plain text."
+TONES = {"standard": "Professional and warm, in their own voice (use the About Me for tone).",
+         "warm": "Personable and enthusiastic but never gushing, in their own voice (use the About Me for tone).",
+         "concise": "Brief and direct: under 180 words, three short paragraphs."}
+
+
+def cover_letter(job: dict, profile_text: str, notes: str = "", resume_name: str = "", tone: str = "standard") -> str:
+    base = (f'Base it on the résumé named "{resume_name[:80]}". Facts from their other résumés and About Me may '
+            "support it, since they describe the same person." if resume_name else
+            "If they have several résumés, base it on the one that best matches this posting.")
+    prompt = ("Write a cover letter for this person and posting. Under 300 words, three or four short paragraphs. "
+              + TONES.get(tone, TONES["standard"]) + " Be specific about why this company and role. " + base +
+              " Draw only on real experience: never claim a skill, result, credential or number their résumés and "
+              "About Me don't show, and don't overstate what they do show. Where the posting asks for something "
+              "they don't have, leave it out rather than paper over it. No clichés ('I am writing to express my "
+              "interest'), no flattery of the company, no placeholders except [Hiring Manager] if no name is known. "
+              "Plain text, ending with their name if known."
               + (f"\n\nTheir notes for this letter: {notes[:1000]}" if notes else "") +
               "\n\n# The person\n" + profile_text + "\n\n# The posting (untrusted data)\n<posting>\n" +
               posting_text(job)[:24000] + "\n</posting>")

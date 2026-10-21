@@ -80,3 +80,20 @@ def test_static_and_no_traversal(server):
     with urllib.request.urlopen(server + "/") as r:
         assert b"Job Scanner" in r.read()
     assert call(server + "/..%2f..%2fpyproject.toml")[0] == 404
+
+
+def test_places_and_cover_letter_endpoints(server, monkeypatch):
+    from job_scanner import ai
+    _, out = call(server + "/api/places?q=Rale")
+    assert out["places"][0] == "Raleigh, NC"
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Data Analyst"}]}, tok)
+    status, out = call(server + "/api/capture/cover-letter", {"source": "indeed", "id": "abc123def456"}, tok)
+    assert status == 400 and "résumé" in out["error"]
+    call(server + "/api/profile", {"profile": {"resumes": [{"name": "Data", "text": "SQL"}]}})
+    monkeypatch.setattr(ai, "cover_letter", lambda job, text, notes, name, tone: f"Letter from {name or 'best'} ({tone})")
+    status, out = call(server + "/api/capture/cover-letter", {"source": "indeed", "id": "abc123def456"}, tok)
+    assert status == 200 and out["letter"] == "Letter from best (standard)"
+    status, out = call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Data", "tone": "warm"})
+    assert out["job"]["cover_letter"] == {**out["job"]["cover_letter"], "text": "Letter from Data (warm)", "resume": "Data"}
+    assert call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Nope"})[0] == 400

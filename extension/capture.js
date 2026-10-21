@@ -372,10 +372,11 @@
       button.primary { background:#0f6b4f; border-color:#0f6b4f; color:#fff; }
       button:disabled { opacity:.6; cursor:default; }
       .note { color:#57606a; font-size:12px; margin-top:8px; }
+      textarea.letter { width:100%; min-height:220px; margin-top:4px; padding:8px; border:1px solid #d0d7de; border-radius:8px; font:13px/1.45 inherit; resize:vertical; }
     </style>
     <div class="wrap"><div class="card"></div><div class="tag"><span class="dot"></span><span class="txt">Job Scanner · watching</span></div></div>`;
     const wrap = root.querySelector(".wrap"), tag = root.querySelector(".tag"), txt = root.querySelector(".txt"), card = root.querySelector(".card");
-    let shown = false, showTag = true, job = null, data = null, busy = false, note = "";
+    let shown = false, showTag = true, job = null, data = null, busy = false, note = "", letter = "";
     tag.addEventListener("click", () => { wrap.classList.toggle("open"); if (wrap.classList.contains("open")) refresh(); });
 
     function mount() { if (!shown && showTag && document.body) { document.body.appendChild(box); shown = true; } }
@@ -395,14 +396,17 @@
         <span class="score ${m.verdict}">${m.verdict} ${m.score}</span><span class="sub">${m.by === "ai" ? `Claude's assessment${ai.confidence ? ` · ${ai.confidence} confidence` : ""}` : "Match to your preferences, not your chances"}</span>
         ${ai ? `<p>${esc(ai.summary)}</p>${ai.interview_odds ? `<p><b>Realistic odds:</b> ${esc(ai.interview_odds)}</p>` : ""}${list("Strengths", ai.strengths, (x) => x.requirement + ": " + x.evidence)}
           ${list("Gaps", ai.gaps, (x) => `${x.requirement} (${x.severity}). ${x.how_to_address}`)}
-          ${list("Red flags", ai.red_flags)}${list("Conflicts with what you want", ai.preference_conflicts)}${list("Résumé tips", ai.resume_tips)}`
+          ${list("Red flags", ai.red_flags)}${ai.best_resume ? `<h4>Résumé to send</h4><p>${esc(ai.best_resume)}</p>` : ""}${list("Conflicts with what you want", ai.preference_conflicts)}${list("Résumé tips", ai.resume_tips)}`
           : `${list("Good", r.reasons)}${list("Watch out", r.cautions)}`}
         <div class="row">
           <button class="primary" data-act="analyze" ${busy ? "disabled" : ""}>${busy ? "Claude is reading…" : ai ? "Ask Claude again" : "Ask Claude"}</button>
           <button data-act="saved">${j.status === "saved" ? "Saved ✓" : "Save"}</button>
           <button data-act="applied">${j.status === "applied" ? "Applied ✓" : "I applied"}</button>
+          <button data-act="letter" ${busy || letter === null ? "disabled" : ""}>${letter === null ? "Writing…" : "Cover letter"}</button>
           <button data-act="app">Open in app</button>
-        </div>${note ? `<p class="note">${esc(note)}</p>` : ""}`;
+        </div>${note ? `<p class="note">${esc(note)}</p>` : ""}
+        ${letter ? `<h4>Cover letter</h4><textarea class="letter" readonly></textarea><div class="row"><button data-act="copy">Copy letter</button></div>` : ""}`;
+      if (letter) card.querySelector(".letter").value = letter;
       card.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => act(b.dataset.act)));
     }
     function refresh() {
@@ -428,6 +432,16 @@
     function act(a) {
       if (a === "analyze") return analyze(false);
       if (a === "app") return send({ type: "open-app", key: `${job.source}:${job.id}` });
+      if (a === "copy") { navigator.clipboard.writeText(letter).then(() => { note = "Copied. Read it over before you send it."; render(); }); return; }
+      if (a === "letter") {
+        letter = null; note = ""; render();
+        send({ type: "cover-letter", source: job.source, id: job.id }, (r) => {
+          letter = (r && r.letter) || "";
+          note = r && r.letter ? "Written from your résumés only. Change the résumé or tone in the app." : (r && r.error) || "Couldn't write it.";
+          render();
+        });
+        return;
+      }
       const st = data && data.job.status === a ? "" : a;
       send({ type: "set-status", source: job.source, id: job.id, status: st }, (r) => {
         if (r && r.mark) { marks.set(job.id, r.mark); data.job.status = st; applyStamps(); }
@@ -439,7 +453,7 @@
       setVisible(v) { showTag = v; if (!v && shown) { box.remove(); shown = false; } },
       job(j) {
         if (j && job && j.id === job.id) return;
-        job = j; data = null; note = ""; busy = false;
+        job = j; data = null; note = ""; busy = false; letter = "";
         if (!j) { status(null, "watching"); wrap.classList.remove("open"); }
         render();
       },
