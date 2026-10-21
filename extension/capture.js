@@ -281,18 +281,23 @@
 
   // Is the site still being read? Sites change their pages; when cards or a posting stop yielding what we need,
   // say so on the page and on the icon instead of failing quietly.
-  const health = { cardsFound: 0, cardsRead: 0, itemMissSince: 0, warned: "" };
+  const health = { cardsFound: 0, cardsRead: 0, itemMissSince: 0, warned: "", okSent: {} };
+  function reportOk(what) {  // once per page: lets the app clear an old "can't read" warning
+    if (site === GENERIC || health.okSent[what]) return;
+    health.okSent[what] = true;
+    send({ type: "site-health", ok: true, what, source: site.source, path: location.pathname });
+  }
   const started = Date.now();
   function checkHealth() {
     if (site === GENERIC || health.warned) return;
     const now = Date.now();
-    let problem = "";
-    if (health.itemMissSince && now - health.itemMissSince > 8000) problem = "Can't read this posting";
-    else if (health.cardsFound >= 3 && health.cardsRead === 0 && now - started > 8000) problem = "Can't read the job cards";
+    let problem = "", what = "";
+    if (health.itemMissSince && now - health.itemMissSince > 8000) { problem = "Can't read this posting"; what = "posting"; }
+    else if (health.cardsFound >= 3 && health.cardsRead === 0 && now - started > 8000) { problem = "Can't read the job cards"; what = "cards"; }
     if (!problem) return;
     health.warned = problem;
     panel.status("bad", `${problem}: this site may have changed. Click the icon, then Copy diagnostics`);
-    send({ type: "site-health", ok: false, problem });
+    send({ type: "site-health", ok: false, problem, what, source: site.source, path: location.pathname });
   }
 
   function scanCards() {
@@ -304,6 +309,7 @@
       try { row = site.card(c.el, c); } catch (_) { row = null; }
       if (!row || !row.title) continue;
       health.cardsRead++;
+      reportOk("cards");
       rows.push({ source: site.source, id: c.id, kind: "card", url: c.url, ...row });
     }
     if (rows.length) post(rows);
@@ -316,7 +322,7 @@
     if (!cur) { if (currentId) { currentId = null; panel.job(null); } return; }
     let row = null;
     try { row = site.item(cur.root); } catch (_) { row = null; }
-    if (!row || !row.title) { health.itemMissSince = health.itemMissSince || Date.now(); } else { health.itemMissSince = 0; }
+    if (!row || !row.title) { health.itemMissSince = health.itemMissSince || Date.now(); } else { health.itemMissSince = 0; reportOk("posting"); }
     if (!row || (!row.description && !force)) return;
     for (const k of Object.keys(row)) if (row[k] === undefined || row[k] === "") delete row[k];
     const changed = currentId !== cur.id;

@@ -79,11 +79,26 @@ function warningsHtml(ws) {
 function bindRows(root) {
   root.querySelectorAll(".job").forEach((el) => el.addEventListener("click", () => (location.hash = "job/" + encodeURIComponent(el.dataset.key))));
 }
+const SITE_CHECK = { posting: "postings", cards: "search results" };
+function healthWarning() {
+  const bad = [];
+  for (const [src, checks] of Object.entries(S.site_health || {})) {
+    for (const [what, e] of Object.entries(checks)) if (!e.ok) bad.push(`${esc(S.sources[src] || src)} ${SITE_CHECK[what] || what} (since ${esc((e.at || "").slice(0, 10))})`);
+  }
+  return bad.length ? `<div class="card warnings"><b>Job Scanner can't read ${bad.join(", ")}.</b> The site has probably changed its pages.
+    Open one of those pages, click the extension, then <b>Copy diagnostics</b>, and paste it into an issue or to Claude so the reader can be fixed.</div>` : "";
+}
+function healthList() {
+  const rows = Object.entries(S.site_health || {}).flatMap(([src, checks]) => Object.entries(checks).map(([what, e]) =>
+    `<li><b>${esc(S.sources[src] || src)} ${esc(SITE_CHECK[what] || what)}</b>: ${e.ok ? "read fine" : `<span class="warn-text">not readable</span> on ${esc(e.path || "?")}`} <span class="note">(${esc((e.at || "").slice(0, 16).replace("T", " "))})</span></li>`));
+  return rows.length ? `<ul class="clean">${rows.join("")}</ul>` : `<p class="note">Nothing reported yet. Browse a job site with the extension on.</p>`;
+}
 async function showJobs() {
   const sources = Object.entries(S.sources).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   view.innerHTML = `
     <h1>Jobs</h1>
     <p class="lede">Every posting the extension has read, best fit first. ✦ marks Claude's assessment of the full posting against your résumé. The rest are quick matches to your preferences, which don't judge your chances.</p>
+    ${healthWarning()}
     ${profileEmpty() ? `<div class="card"><b>Start with your Profile.</b> Add the roles you want, your skills and your résumé so the scores mean something. <a href="#profile">Fill it in</a></div>` : ""}
     <div class="toolbar">
       <input type="search" id="q" placeholder="Search title, company, location" value="${esc(filters.text)}">
@@ -119,9 +134,32 @@ async function showJobs() {
 }
 
 /* ---------- one job ---------- */
+function companyHtml(name, c) {
+  const head = `<h2>About ${esc(name)}</h2>`;
+  const btn = `<button class="btn small" id="company-read">${c ? "Read again" : "What does Claude know about them?"}</button>`;
+  if (!c) return head + `<p class="note">Claude reads each employer once (a quick, cheap call) when it first reads one of their postings, and reuses it for the rest.</p>` + btn;
+  const when = `<p class="note">From Claude's general knowledge as of ${esc((c.at || "").slice(0, 10))}. It can't browse, so it may be out of date: check anything that matters.</p>`;
+  const check = c.check && c.check.length ? `<h3>Look up before you apply</h3>${list(c.check)}` : "";
+  if (!c.known) return head + `<p>Claude doesn't recognise this employer well enough to say anything reliable, so it hasn't guessed.</p>` + check + when + btn;
+  return head + `<p>${esc(c.summary)}</p><div>${c.industry ? `<span class="tag">${esc(c.industry)}</span>` : ""}${c.size ? `<span class="tag">${esc(c.size)}</span>` : ""}</div>`
+    + (c.notes && c.notes.length ? `<h3>Worth knowing</h3>${list(c.notes)}` : "") + check + when + btn;
+}
+function bindCompany(key, name) {
+  const b = $("#company-read");
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    b.innerHTML = `<span class="spinner"></span>Asking Claude…`;
+    try {
+      const out = await api(`/api/jobs/${encodeURIComponent(key)}/company`, {});
+      $("#company-card").innerHTML = companyHtml(name, out.company);
+    } catch (err) { toast(err.message); }
+    bindCompany(key, name);
+  });
+}
 const list = (items, fn = esc) => items && items.length ? `<ul class="clean">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="note">None.</p>`;
 async function showJob(key) {
-  const { job: j, ai_current, todo, pay } = await api("/api/jobs/" + encodeURIComponent(key));
+  const { job: j, ai_current, todo, pay, company } = await api("/api/jobs/" + encodeURIComponent(key));
   const b = j.best, r = j.rules || {}, ai = j.ai;
   const statusOpts = S.statuses.map((s) => `<option value="${s}" ${s === (j.status || "") ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("");
   view.innerHTML = `
@@ -146,6 +184,7 @@ async function showJob(key) {
     <div class="grid2">
       <div>
         <div class="card" id="ai-card">${ai ? aiHtml(ai) : `<h2>Claude's take</h2><p class="note">${S.ai.backend ? "Not asked yet. Click Ask Claude to get a fit score, your strengths and gaps for this role, red flags and résumé tips." : "Set up Claude on the Setup page to get a full analysis on your Claude subscription."}</p>`}</div>
+        ${j.company ? `<div class="card" id="company-card">${companyHtml(j.company, company)}</div>` : ""}
         <div class="card"><h2>Quick match: ${r.score} (${r.verdict})</h2><p class="note">How well the posting matches your stated preferences. It doesn't judge your chances; Claude's take does.</p><h3>Good</h3>${list(r.reasons)}<h3>Watch out</h3>${list(r.cautions)}${payHtml(pay)}</div>
       </div>
       <div>
@@ -196,6 +235,7 @@ async function showJob(key) {
     } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Easy apply"; }
   });
   bindPacket(view, key, j);
+  bindCompany(key, j.company);
   $("#analyze").addEventListener("click", async (e) => {
     const btn = e.target;
     btn.disabled = true;
@@ -569,6 +609,8 @@ function showProfile() {
 }
 
 /* ---------- setup ---------- */
+const MODELS = [["haiku", "Haiku (fast, light on your plan)"], ["sonnet", "Sonnet (balanced)"], ["opus", "Opus (most thorough)"]];
+const modelOpts = (v, dflt) => `<option value="">${esc(dflt)}</option>` + MODELS.map(([k, label]) => `<option value="${k}" ${v === k ? "selected" : ""}>${label}</option>`).join("");
 async function showSetup() {
   const [{ token }, usage] = await Promise.all([api("/api/token"), api("/api/ai/usage")]);
   const a = S.ai, s = S.settings;
@@ -577,10 +619,12 @@ async function showSetup() {
       <div class="card"><h2>1. Claude, on your subscription</h2>
         <p>Status: <b>${esc(a.label)}</b> <button class="btn small" id="test-ai" ${a.backend ? "" : "disabled"}>Test it</button></p>
         <p id="test-out" class="note"></p>
+        ${a.limited ? `<p class="warn-text">${esc(a.limited)} Automatic reads are paused until then; Ask Claude still tries.</p>` : ""}
         <details ${a.backend ? "" : "open"}><summary>How to sign Claude Code in</summary>
         <ol class="steps">
           <li>Open <b>PowerShell</b> (Windows: press the Windows key, type PowerShell, press Enter) or <b>Terminal</b> (Mac).</li>
-          <li>Type <code>claude</code> and press Enter. If it isn't found, install it first: <code>npm install -g @anthropic-ai/claude-code</code>.</li>
+          <li>Type <code>claude</code> and press Enter. If it isn't found, install it first: <code>npm install -g @anthropic-ai/claude-code</code> (it needs Node.js 22 or newer; check with <code>node -v</code>, and update with <code>winget install OpenJS.NodeJS.LTS</code> or from nodejs.org).</li>
+          <li>If Windows says <i>running scripts is disabled</i>, run <code>Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</code>, answer Y, and try <code>claude</code> again.</li>
           <li>Choose <b>Claude account with subscription</b>, approve in the browser window that opens, then type <code>/exit</code>.</li>
           <li>Restart Job Scanner (close its window and run start.bat again), then click <b>Test it</b>.</li>
         </ol></details>
@@ -597,6 +641,14 @@ async function showSetup() {
           <label class="f">Only if the quick score is at least <input type="number" id="minscore" min="0" max="100" value="${s.auto_min_score}"></label>
           <label class="f">At most this many calls a day <small>0 = no limit</small><input type="number" id="limit" min="0" max="1000" value="${s.ai_daily_limit}"></label>
         </div>
+        <h3>Which Claude model does what</h3>
+        <div class="grid2">
+          <label class="f">Reading postings, letters, résumés <select id="model_main">${modelOpts(s.model_main, "Claude Code's default")}</select></label>
+          <label class="f">Quick jobs (employer reads, title ideas) <select id="model_light">${modelOpts(s.model_light, "Same as above")}</select></label>
+        </div>
+        <label class="f">Automatic reads (when you open a posting) use <select id="model_auto"><option value="main" ${s.model_auto !== "light" ? "selected" : ""}>the main model</option><option value="light" ${s.model_auto === "light" ? "selected" : ""}>the quick-jobs model (uses less of your plan)</option></select></label>
+        <p class="note">Haiku is fastest and uses the least of your plan's limits; Opus is the most thorough. Scores are held to the same rubric either way.</p>
+        ${s.startup_supported ? `<label class="f"><input type="checkbox" id="startup" ${s.start_with_windows ? "checked" : ""}> Start Job Scanner (hidden) when I sign in to Windows</label>` : ""}
         <button class="btn" id="save-ai">Save</button>
         <p class="note">Used today: ${usage.today.calls} calls (${usage.today.tokens.toLocaleString()} tokens). This week: ${usage.week.calls} calls.</p>
       </div>
@@ -611,6 +663,7 @@ async function showSetup() {
         <button class="btn small" id="rotate">Make a new token</button>
       </div>
     </div>
+    <div class="card"><h2>Can the extension read each site?</h2>${healthList()}</div>
     <div class="card"><h2>Your data</h2>
       <p class="note">${S.counts.total} jobs, ${S.counts.analyzed} read by Claude. Everything is stored on this computer.</p>
       <div class="actions"><a class="btn" href="/api/jobs.csv">Export CSV</a><button class="btn" id="rescore">Rescore all jobs</button><button class="btn danger" id="clear">Clear jobs I'm not tracking</button></div>
@@ -630,7 +683,10 @@ async function showSetup() {
   });
   $("#save-ai").addEventListener("click", async () => {
     try {
-      const out = await api("/api/settings", { auto_analyze: $("#auto").checked, auto_min_score: $("#minscore").value, ai_daily_limit: $("#limit").value });
+      const body = { auto_analyze: $("#auto").checked, auto_min_score: $("#minscore").value, ai_daily_limit: $("#limit").value,
+        model_main: $("#model_main").value, model_light: $("#model_light").value, model_auto: $("#model_auto").value };
+      if ($("#startup")) body.start_with_windows = $("#startup").checked;
+      const out = await api("/api/settings", body);
       S.settings = out.settings;
       toast("Saved.");
     } catch (err) { toast(err.message); }

@@ -50,6 +50,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     });
     return true; // Claude takes a little while
   } else if (msg.type === "site-health") {
+    if (msg.source && msg.what) call("/api/capture/health", { source: msg.source, what: msg.what, ok: !!msg.ok, path: msg.path || "" });
     if (tab != null && !msg.ok) {
       chrome.action.setBadgeText({ tabId: tab, text: "!" });
       chrome.action.setBadgeBackgroundColor({ tabId: tab, color: "#b7791f" });

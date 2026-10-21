@@ -34,7 +34,8 @@ def test_linkedin_cards_and_open_posting(reads):
     assert cards[0]["company"] == "Acme Health" and cards[0]["pay_text"] == "$65K/yr - $80K/yr"
     item = by_kind(p, "item")[0]
     assert item["title"] == "Data Analyst" and "SQL and Tableau" in item["description"]
-    assert p["health"] == []
+    assert [h for h in p["health"] if not h["ok"]] == []
+    assert {h["what"] for h in p["health"]} == {"cards", "posting"}  # each reported readable once
 
 
 def test_indeed_and_ncworks_cards(reads):
@@ -52,4 +53,5 @@ def test_career_page_json_ld(reads):
 def test_a_changed_page_is_reported_not_silently_missed(reads):
     p = reads["linkedin-changed.html"]
     assert by_kind(p, "item") == []
-    assert p["health"] and p["health"][0]["problem"] == "Can't read this posting"
+    bad = [h for h in p["health"] if not h["ok"]]
+    assert bad and bad[0]["problem"] == "Can't read this posting" and bad[0]["what"] == "posting"

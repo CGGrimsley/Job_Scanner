@@ -15,5 +15,10 @@ Chrome extension + local Python app (stdlib only) that scores job postings and g
 - `extension/capture.js` per-site readers (LinkedIn, Indeed, NCWorks, Greenhouse/Lever/Workday, generic). Selectors are best-guess against live sites; use the popup's diagnostics to fix them.
 - Bump `extension/manifest.json` version when the extension changes (the extension auto-reloads when the app's copy is newer).
 
+- Claude calls (`ai.ask_json`) go through `ai.gate`: asked-for calls first, automatic ones newest first, cancellable (`/api/capture/cancel`). Errors are classified (`ai.classify`: limit, auth, transient, timeout); transient ones are retried once, a plan limit pauses automatic reads (`ai.limited`). The system prompt goes in a file (`--system-prompt-file`) because of Windows' command-line limit.
+- Models per task: settings `model_main`, `model_light` (default haiku; `LIGHT_KINDS`), `model_auto` (`ai.model_for`).
+- `companies.py`: one light read per employer (`ai.company_read`), cached in `companies.json` for 180 days and passed to the analysis as context. Unknown employers are stored as unknown, never guessed.
+- `facts.py`: years/degree/clearance from the posting, used for Jobs filters and a scoring caution. `health.py`: the extension reports readable/unreadable pages per site (`/api/capture/health`).
+
 ## Tests
 `python -m pytest`

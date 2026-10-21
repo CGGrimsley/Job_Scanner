@@ -174,3 +174,22 @@ def test_easy_apply_builds_the_packet_and_autofill_finds_it(server, monkeypatch)
     assert call(server + "/api/capture/autofill", {"url": "https://acme.com/careers"})[0] == 401
     status, out = call(server + "/api/capture/answers", {"key": "greenhouse:acme-4012345", "questions": ["Why Acme?"]}, tok)
     assert status == 200 and out["answers"][0]["answer"] == "Your SQL work"
+
+
+def test_models_company_read_and_site_health(server, monkeypatch):
+    from job_scanner import ai
+    status, out = call(server + "/api/settings", {"model_main": "opus", "model_light": "haiku", "model_auto": "light"})
+    assert status == 200 and out["settings"]["model_main"] == "opus" and out["settings"]["model_auto"] == "light"
+    assert call(server + "/api/settings", {"model_main": "gpt-9"})[0] == 400
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Analyst", "company": "Acme Corp"}]}, tok)
+    asked = []
+    monkeypatch.setattr(ai, "company_read", lambda job, **kw: asked.append(1) or
+                        {"known": True, "summary": "Makes anvils.", "industry": "", "size": "", "notes": [], "check": []})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/company", {})
+    assert status == 200 and out["company"]["summary"] == "Makes anvils."
+    _, out = call(server + "/api/jobs/indeed:abc123def456")
+    assert out["company"]["summary"] == "Makes anvils." and asked == [1]
+    assert call(server + "/api/capture/health", {"source": "indeed", "what": "posting", "ok": False}, tok)[0] == 200
+    _, state = call(server + "/api/state")
+    assert state["site_health"]["indeed"]["posting"]["ok"] is False
