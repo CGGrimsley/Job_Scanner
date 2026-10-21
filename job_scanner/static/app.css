@@ -115,3 +115,14 @@ ul.clean { margin: 0; padding-left: 20px; } ul.clean li { margin: 4px 0; }
 .answers .you { color: #8a5a00; }
 button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
 .grid3 select { display: block; width: 100%; margin-top: 4px; }
+.tbl { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 14px; }
+.tbl th, .tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.tbl small { color: var(--muted); }
+.score-chip { font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+.score-chip.Apply { background: var(--apply-bg); color: var(--apply); } .score-chip.Consider { background: var(--consider-bg); color: var(--consider); } .score-chip.Skip { background: var(--skip-bg); color: var(--skip); }
+.tag.warn-scam, .warnings .warn-scam b { color: var(--bad); }
+.tag.warn-scam { background: #fde8e8; } .tag.warn-ghost { background: var(--consider-bg); color: var(--consider); }
+.warnings .warn-ghost b, .warnings .warn-caution b { color: var(--consider); }
+.warnings { border-left: 4px solid var(--consider); }
+@media (max-width: 760px) { .tbl { display: block; overflow-x: auto; } }
