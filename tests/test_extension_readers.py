@@ -55,3 +55,17 @@ def test_a_changed_page_is_reported_not_silently_missed(reads):
     assert by_kind(p, "item") == []
     bad = [h for h in p["health"] if not h["ok"]]
     assert bad and bad[0]["problem"] == "Can't read this posting" and bad[0]["what"] == "posting"
+
+
+def test_linkedin_newer_search_page_without_its_old_classes(reads):
+    p = reads["linkedin-search-results.html"]
+    cards = by_kind(p, "card")
+    assert [c["id"] for c in cards] == ["4457298164", "4457298999"]  # one from a link, one from a data attribute
+    assert cards[0]["title"] == "Operations Analyst" and cards[0]["company"] == "Initech"
+    assert cards[0]["pay_text"] == "$55K/yr - $65K/yr" and cards[0]["remote"] == "hybrid"
+    assert cards[1]["title"] == "Data Analyst" and cards[1]["company"] == "Globex"
+    item = by_kind(p, "item")[0]
+    assert item["id"] == "4457298164" and item["title"] == "Operations Analyst" and item["company"] == "Initech"
+    assert item["description"].startswith("Initech is hiring") and item["applicants"] == 47
+    assert [h for h in p["health"] if not h["ok"]] == []
+    assert p["diag"]["hints"]["about_the_job"] is True

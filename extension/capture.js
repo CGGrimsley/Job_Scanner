@@ -91,26 +91,72 @@
     return best.length > 200 ? best : clean(document.body.innerText, 15000);
   }
 
+  /* ---------- LinkedIn without its class names ---------- */
+  // LinkedIn keeps redesigning (its newer search page, /jobs/search-results/, has none of the old classes). These
+  // find jobs by what a redesign can't easily drop: the job ids in links and data, the "About the job" heading, and
+  // the link to the company's page.
+  const LI_ID = /(?:\/jobs\/view\/(?:[^/?#"]*-)?|currentJobId=|jobPosting(?::|%3A|\()|[?&]jobId=)(\d{6,})/i;
+  const liIdIn = (s) => (String(s || "").match(LI_ID) || [])[1] || null;
+  function withAttr(text, root = document) {  // elements with any attribute containing `text`
+    const out = [];
+    try {
+      const r = document.evaluate(`.//*[@*[contains(., '${text}')]]`, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      for (let i = 0; i < r.snapshotLength && i < 400; i++) out.push(r.snapshotItem(i));
+    } catch (_) { /* no XPath */ }
+    return out;
+  }
+  const attrText = (el) => [...el.attributes].map((a) => a.value).join(" ");
+  const NOISE = /^(promoted|viewed|applied|saved|easy apply|actively (reviewing|recruiting)[\w ]*|be an early applicant|new|save|dismiss|verified|with verification|·|\d+ (applicants?|connections?|school alumni)[\w ]*|[\w ]*in your network|response insights[\w ]*|.*\bago)$/i;
+  const meaningful = (ls) => ls.filter((l) => !NOISE.test(l) && l.length > 1);
+  function aboutTheJob(root) {  // the posting's description block, found by its heading
+    let r;
+    try { r = document.evaluate(`.//*[text()[normalize-space(.)='About the job']]`, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (_) { r = null; }
+    for (let el = r, i = 0; el && i < 6; el = el.parentElement, i++) {
+      const t = clean(el.innerText, 30000);
+      if (t.length > 200) return { el, text: t.replace(/^About the job\s*/i, "") };
+    }
+    return null;
+  }
+
   /* ---------- the sites ---------- */
   const SITES = [
     {
       source: "linkedin", host: /(^|\.)linkedin\.com$/,
       cards() {
-        const seen = new Map();
-        for (const el of document.querySelectorAll("[data-occludable-job-id], [data-job-id]")) {
-          const id = el.getAttribute("data-occludable-job-id") || el.getAttribute("data-job-id");
-          if (!/^\d{6,}$/.test(id || "") || seen.has(id)) continue;
-          if (el.closest(".jobs-search__job-details, .jobs-details, .job-view-layout")) continue;
-          seen.set(id, el.closest("li") || el);
+        const seen = new Map(), hints = new Map();
+        const add = (id, el, title) => {
+          if (!/^\d{6,}$/.test(id || "") || seen.has(id)) return;
+          if (el.closest(".jobs-search__job-details, .jobs-details, .job-view-layout")) return;
+          const item = el.closest('li, [role="listitem"]');
+          let card = item || el;
+          for (let up = el, i = 0; !item && card === el && up.parentElement && i < 5; i++) {  // no list item: the nearest block that looks like a card
+            up = up.parentElement;
+            if (clean(up.innerText, 2000).length > 40) card = up;
+          }
+          seen.set(id, { card, el });
+          if (title) hints.set(id, title);
+        };
+        for (const el of document.querySelectorAll("[data-occludable-job-id], [data-job-id]")) add(el.getAttribute("data-occludable-job-id") || el.getAttribute("data-job-id"), el);
+        if (!seen.size) {
+          for (const a of document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="], a[href*="jobId="]')) {
+            add(liIdIn(a.getAttribute("href")), a, clean(a.getAttribute("aria-label") || a.innerText, 300).split("\n")[0]);
+          }
+          for (const el of withAttr("jobPosting")) add(liIdIn(attrText(el)), el);
         }
-        return [...seen].map(([id, el]) => ({ id, el, url: `https://www.linkedin.com/jobs/view/${id}/` }));
+        // a "card" that holds several jobs is really the whole list: use each job's own element instead
+        const counts = new Map();
+        for (const { card } of seen.values()) counts.set(card, (counts.get(card) || 0) + 1);
+        return [...seen].map(([id, { card, el }]) => ({ id, el: counts.get(card) > 1 ? el.parentElement || el : card,
+          url: `https://www.linkedin.com/jobs/view/${id}/`, title: hints.get(id) }));
       },
-      card(el) {
+      card(el, c = {}) {
         const ls = lines(el);
         if (ls.length < 2) return null; // not rendered yet (LinkedIn fills cards in as they scroll into view)
-        const title = textOf(el, ".job-card-list__title--link strong, .job-card-list__title strong, a.job-card-container__link strong, .artdeco-entity-lockup__title")
-          .replace(/\s+with verification$/i, "") || ls[0];
-        const company = textOf(el, ".artdeco-entity-lockup__subtitle, .job-card-container__primary-description, .job-card-container__company-name") || ls[1];
+        const plain = meaningful(ls);
+        const title = (textOf(el, ".job-card-list__title--link strong, .job-card-list__title strong, a.job-card-container__link strong, .artdeco-entity-lockup__title")
+          || c.title || plain[0] || ls[0]).replace(/\s+with verification$/i, "");
+        const company = textOf(el, ".artdeco-entity-lockup__subtitle, .job-card-container__primary-description, .job-card-container__company-name")
+          || plain.find((l) => l !== title && !title.startsWith(l) && !l.startsWith(title)) || ls[1];
         const meta = [...el.querySelectorAll(".job-card-container__metadata-wrapper li, .artdeco-entity-lockup__caption li, .job-card-container__metadata-item")]
           .map((x) => clean(x.innerText, 120)).filter(Boolean);
         const location = meta.find((m) => !PAY.test(m)) || ls.find((l) => /,\s?[A-Z]{2}\b|\bremote\b|united states/i.test(l)) || "";
@@ -127,9 +173,9 @@
         if (link && !link.href.includes(id)) return null; // the pane hasn't caught up with the URL yet
         return { id, root: pane, url: `https://www.linkedin.com/jobs/view/${id}/` };
       },
-      item(root) {
+      item(root, cur = {}) {
         const description = textOf(root, "#job-details, .jobs-description__content, .jobs-description-content__text, .jobs-box__html-content, .show-more-less-html__markup, .description__text");
-        if (description.length < 80) return null;
+        if (description.length < 80) return this.itemByHeading(root, cur.id);
         const title = textOf(root, ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, .top-card-layout__title, h1");
         const company = textOf(root, ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, .topcard__org-name-link");
         const top = textOf(root, ".job-details-jobs-unified-top-card__tertiary-description-container, .job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description, .topcard__flavor-row", 400);
@@ -143,6 +189,23 @@
           easy_apply: !!one(root, ".jobs-apply-button--top-card, .jobs-apply-button") && /easy apply/i.test(textOf(root, ".jobs-apply-button--top-card, .jobs-apply-button")),
           applied_on_site: /\bapplied\s+\d+\s+\w+\s+ago\b/i.test(textOf(root, ".jobs-s-apply, .artdeco-inline-feedback, .post-apply-timeline")),
           closed: /no longer accepting applications/i.test(textOf(root, ".jobs-details-top-card__apply-error, .artdeco-inline-feedback, .jobs-s-apply")) };
+      },
+      itemByHeading(root, id) {  // the open posting on a page none of the selectors above know
+        const about = aboutTheJob(root);
+        if (!about || about.text.length < 80) return null;
+        let pane = about.el;  // climb to the block that also holds the top card: the company link and the title
+        for (let i = 0; i < 10 && pane.parentElement && !one(pane, 'a[href*="/company/"]'); i++) pane = pane.parentElement;
+        const head = clean(pane.innerText, 3000).split("\n").map((l) => clean(l, 200)).filter(Boolean);
+        const link = id && [...pane.querySelectorAll(`a[href*="${id}"]`)].find((a) => clean(a.innerText).length > 2);
+        const title = clean((link && link.innerText) || textOf(pane, "h1, h2") || meaningful(head)[0] || "", 300).split("\n")[0];
+        const companyLink = [...pane.querySelectorAll('a[href*="/company/"]')].find((a) => clean(a.innerText).length > 1);
+        const company = companyLink ? clean(companyLink.innerText, 200).split("\n")[0] : "";
+        const top = head.slice(0, 15).find((l) => l.includes("·")) || "";
+        const parts = top.split(/\s*·\s*/).filter(Boolean);
+        const headText = head.slice(0, 25).join("\n");
+        return { title, company, location: parts[0] || "", posted_text: postedText(parts), applicants: applicants(headText),
+          pay_text: payText(head.slice(0, 25)), remote: remoteOf(headText), job_type: jobType(headText), description: about.text,
+          easy_apply: /easy apply/i.test(headText), closed: /no longer accepting applications/i.test(headText) };
       },
     },
     {
@@ -300,6 +363,33 @@
     send({ type: "site-health", ok: false, problem, what, source: site.source, path: location.pathname });
   }
 
+  // What the corner tag says while you scroll: whether the app is reachable, how many jobs on this page have been
+  // read and scored, and how they came out.
+  const conn = { ok: null, error: "" };
+  function onPage() {
+    const ids = site.cards().map((c) => c.id);
+    const scored = ids.filter((id) => marks.has(id)).map((id) => marks.get(id));
+    const count = (v) => scored.filter((m) => m.verdict === v).length;
+    return { found: ids.length, scored: scored.length, waiting: ids.filter((id) => sent.has(id) && !marks.has(id)).length,
+      apply: count("Apply"), consider: count("Consider"), skip: count("Skip") };
+  }
+  function summary() {
+    if (conn.ok === false) return { state: "bad", text: conn.error };
+    if (health.warned) return { state: "bad", text: health.warned };
+    const p = onPage();
+    if (!p.found) return { state: null, text: site === GENERIC ? "scanning this page" : enabled ? "looking for jobs on this page…" : "paused" };
+    const parts = [`${p.scored} of ${p.found} jobs scored`];
+    if (p.apply) parts.push(`${p.apply} Apply`);
+    if (p.consider) parts.push(`${p.consider} Consider`);
+    if (p.waiting) parts.push(`scoring ${p.waiting}…`);
+    return { state: "ok", text: parts.join(" · ") };
+  }
+  function showSummary() {
+    if (currentId && marks.has(currentId)) return panel.tagFor(marks.get(currentId));
+    const s = summary();
+    panel.status(s.state, s.text);
+  }
+
   function scanCards() {
     const rows = [];
     for (const c of site.cards()) {
@@ -314,6 +404,7 @@
     }
     if (rows.length) post(rows);
     applyStamps();
+    showSummary();
   }
 
   let currentId = null, analysisAsked = new Set();
@@ -321,7 +412,7 @@
     const cur = site.current();
     if (!cur) { if (currentId) { currentId = null; panel.job(null); } return; }
     let row = null;
-    try { row = site.item(cur.root); } catch (_) { row = null; }
+    try { row = site.item(cur.root, cur); } catch (_) { row = null; }
     if (!row || !row.title) { health.itemMissSince = health.itemMissSince || Date.now(); } else { health.itemMissSince = 0; reportOk("posting"); }
     if (!row || (!row.description && !force)) return;
     for (const k of Object.keys(row)) if (row[k] === undefined || row[k] === "") delete row[k];
@@ -418,7 +509,18 @@
     const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const list = (title, items, fn = (x) => x) => items && items.length ? `<h4>${title}</h4><ul>${items.slice(0, 5).map((x) => `<li>${esc(fn(x))}</li>`).join("")}</ul>` : "";
     function render() {
-      if (!job) { card.innerHTML = `<p class="sub">Open a job posting and its fit shows here.</p>`; return; }
+      if (!job) {
+        const p = onPage(), s = summary();
+        card.innerHTML = `<h3>On this page</h3>
+          ${conn.ok === false ? `<p class="warn">${esc(conn.error)}. Is the Job Scanner app running? Check the address and pairing token in the extension's Settings (click its icon, then Settings).</p>`
+            : conn.ok ? `<p class="sub">Connected to the Job Scanner app.</p>` : `<p class="sub">Checking the connection to the app…</p>`}
+          ${health.warned ? `<p class="warn">${esc(health.warned)}</p>` : ""}
+          <ul><li>${p.found} job cards found${p.found ? `, ${p.scored} scored` : ""}${p.waiting ? `, ${p.waiting} being scored` : ""}</li>
+          ${p.scored ? `<li>${p.apply} Apply · ${p.consider} Consider · ${p.skip} Skip</li>` : ""}</ul>
+          ${!p.found && site !== GENERIC ? `<p class="note">No job cards found yet. Scroll the results, or open a posting. If this stays at 0 on a search page, click the extension's icon and Copy diagnostics for this page.</p>` : ""}
+          <p class="note">Open a job posting and its fit shows here.</p>`;
+        return;
+      }
       if (!data) { card.innerHTML = `<h3>${esc(job.title || "This job")}</h3><p class="sub">Reading the posting…</p>`; return; }
       const j = data.job, m = data.mark, ai = j.ai, r = j.rules || {};
       card.innerHTML = `<h3>${esc(j.title)}</h3><p class="sub">${esc([j.company, j.location].filter(Boolean).join(" · "))}</p>
@@ -449,7 +551,11 @@
         render();
       });
     }
-    function tagFor(m) { if (m && job && m.id === job.id) status("ok", `${m.by === "ai" ? "✦ " : ""}${m.verdict} ${m.score}`); }
+    function tagFor(m) {
+      if (!m || !job || m.id !== job.id) return;
+      const p = onPage();
+      status("ok", `This job: ${m.by === "ai" ? "✦ " : ""}${m.verdict} ${m.score}${p.found ? ` · ${p.scored} of ${p.found} scored here` : ""}`);
+    }
     function analyze(auto) {
       if (!job || busy) return;
       busy = true; note = ""; render();
@@ -519,14 +625,20 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     if (msg.type === "scanner-status") {
-      if (!msg.ok) { panel.status("bad", msg.error && /reach/i.test(msg.error) ? "not connected" : "not paired"); for (const id of msg.forget || []) sent.delete(id); return; }
+      if (!msg.ok) {
+        conn.ok = false; conn.error = msg.error && /reach/i.test(msg.error) ? "Not connected to the app" : "Not paired with the app";
+        for (const id of msg.forget || []) sent.delete(id);
+        showSummary();
+        return;
+      }
+      conn.ok = true;
       for (const m of msg.marks || []) {
         if (m.source !== site.source) continue;
         marks.set(m.id, m);
         panel.captured(m);
       }
       applyStamps();
-      if (!currentId || !marks.has(currentId)) panel.status("ok", `${marks.size} captured`);
+      showSummary();
     } else if (msg.type === "scan-now") {
       scanCards(); scanItem(true);
       reply({ ok: true, site: site.source, cards: site.cards().length, posting: currentId });
@@ -534,11 +646,17 @@
       const cards = site.cards().slice(0, 8).map((c) => { let r = null; try { r = site.card(c.el, c); } catch (e) { r = { error: String(e) }; } return { id: c.id, ...r }; });
       const cur = site.current();
       let item = null;
-      try { item = cur && site.item(cur.root); } catch (e) { item = { error: String(e) }; }
+      try { item = cur && site.item(cur.root, cur); } catch (e) { item = { error: String(e) }; }
       if (item && item.description) item.description = item.description.slice(0, 300) + "…";
       reply({ extension: chrome.runtime.getManifest().version, site: site.source, path: location.pathname, cards_found: site.cards().length,
         cards, current: cur && { id: cur.id, url: cur.url }, item, json_ld: !!jsonLdJob(),
-        health: { cards_found: health.cardsFound, cards_read: health.cardsRead, posting_unread: !!health.itemMissSince, warning: health.warned } });
+        health: { cards_found: health.cardsFound, cards_read: health.cardsRead, posting_unread: !!health.itemMissSince, warning: health.warned },
+        hints: site.source === "linkedin" ? {
+          job_links: document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]').length,
+          job_id_attrs: withAttr("jobPosting").length, about_the_job: !!aboutTheJob(document), company_links: document.querySelectorAll('a[href*="/company/"]').length,
+          list_items: document.querySelectorAll('li, [role="listitem"]').length,
+          job_attr_names: [...new Set(withAttr("job").slice(0, 60).flatMap((el) => [...el.attributes].filter((a) => /job/i.test(a.value)).map((a) => a.name)))].slice(0, 15),
+        } : undefined });
     }
   });
 
@@ -547,6 +665,11 @@
     panel.setVisible(s.indicator);
     if (site === GENERIC) { panel.status(null, "scanning this page"); scanItem(true); return; }
     panel.status(null, enabled ? "watching" : "paused");
+    send({ type: "ping" }, (r) => {
+      conn.ok = !!(r && r.ok);
+      conn.error = conn.ok ? "" : r && /pair|token/i.test(r.error || "") ? "Not paired with the app" : "Not connected to the app";
+      showSummary();
+    });
     if (enabled) { schedule(); setTimeout(() => { if (enabled) { scanCards(); scanItem(); checkHealth(); } }, 9000); }
   });
   chrome.storage.onChanged.addListener((ch) => {

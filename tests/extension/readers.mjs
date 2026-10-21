@@ -14,13 +14,15 @@ try { playwright = createRequire(import.meta.url)("playwright"); } catch (_) {
 }
 const PAGES = [
   ["linkedin.html", "https://www.linkedin.com/jobs/search/?currentJobId=4012345678"],
+  ["linkedin-search-results.html", "https://www.linkedin.com/jobs/search-results/?currentJobId=4457298164&keywords=analyst"],
   ["linkedin-changed.html", "https://www.linkedin.com/jobs/search/?currentJobId=4012345678", 10500], // long enough to warn
   ["indeed.html", "https://www.indeed.com/jobs?q=data"],
   ["ncworks.html", "https://www.ncworks.gov/vosnet/jobbanks/jobsearch.aspx"],
   ["greenhouse.html", "https://boards.greenhouse.io/acmehealth/jobs/4012345"],
 ];
 const capture = fs.readFileSync(path.join(root, "extension", "capture.js"), "utf8");
-const exe = process.env.PLAYWRIGHT_CHROMIUM || (fs.existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
+const installed = ["/opt/pw-browsers/chromium", "C:/Program Files/Google/Chrome/Application/chrome.exe"].find((f) => fs.existsSync(f));
+const exe = process.env.PLAYWRIGHT_CHROMIUM || installed;
 const browser = await playwright.chromium.launch(exe ? { executablePath: exe } : {});
 const out = {};
 for (const [file, url, wait] of PAGES) {
@@ -30,7 +32,7 @@ for (const [file, url, wait] of PAGES) {
   // a stand-in for the extension APIs: records what the reader sends and answers nothing
   await page.addInitScript(() => {
     window.__sent = []; window.__listeners = [];
-    window.chrome = { runtime: { sendMessage: (m, cb) => { window.__sent.push(m); }, onMessage: { addListener: (f) => window.__listeners.push(f) },
+    window.chrome = { runtime: { sendMessage: (m, cb) => { window.__sent.push(m); if (m.type === "ping" && cb) cb({ ok: false, error: "Can't reach Job Scanner" }); }, onMessage: { addListener: (f) => window.__listeners.push(f) },
       getManifest: () => ({ version: "test" }) },
       storage: { local: { get: (d, cb) => cb(d) }, onChanged: { addListener() {} } } };
   });
