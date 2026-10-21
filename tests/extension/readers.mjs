@@ -17,6 +17,7 @@ const PAGES = [
   ["linkedin-changed.html", "https://www.linkedin.com/jobs/search/?currentJobId=4012345678", 10500], // long enough to warn
   ["linkedin-new.html", "https://www.linkedin.com/jobs/search-results/?currentJobId=4457298164&keywords=analyst"],
   ["indeed.html", "https://www.indeed.com/jobs?q=data"],
+  ["indeed-new-pane.html", "https://www.indeed.com/jobs?q=paralegal&l=Durham%2C+NC&vjk=29e32c569f0df126"],
   ["ncworks.html", "https://www.ncworks.gov/vosnet/jobbanks/jobsearch.aspx"],
   ["greenhouse.html", "https://boards.greenhouse.io/acmehealth/jobs/4012345"],
 ];

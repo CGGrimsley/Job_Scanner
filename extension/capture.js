@@ -240,7 +240,7 @@
         const ls = lines(el);
         const title = clean((one(el, "h2.jobTitle span[title]") || {}).title || textOf(el, "h2.jobTitle, .jobTitle, a[data-jk]")).replace(/^new\s+/i, "");
         if (!title) return null;
-        const location = textOf(el, '[data-testid="text-location"], .companyLocation');
+        const location = textOf(el, '[data-testid="text-location"], .companyLocation').replace(/^\d+\s*(?:min|hr)s?\b\s*·?\s*/i, "").replace(/\s*\n\s*/g, " ");
         const snippets = [...el.querySelectorAll('[data-testid="attribute_snippet_testid"], .salary-snippet-container, .estimated-salary, .metadata')]
           .map((x) => clean(x.innerText, 120)).filter(Boolean);
         const all = ls.join("\n");
@@ -256,6 +256,8 @@
         return { id, root, url: `https://www.indeed.com/viewjob?jk=${id}` };
       },
       item(root) {
+        const pane = one(document, '[data-testid="viewjob-main-content"]');
+        if (pane && !one(document, "#jobDescriptionText")) return this.itemNew(pane);
         const description = textOf(root, "#jobDescriptionText");
         if (description.length < 80) return null;
         const info = textOf(root, '#salaryInfoAndJobType, [data-testid="jobsearch-OtherJobDetailsContainer"], #jobDetailsSection');
@@ -265,6 +267,23 @@
           location, pay_text: payText(info.split("\n")), job_type: jobType(info), remote: remoteOf(location + " " + info),
           description, tags: info.split("\n").filter((l) => l && !PAY.test(l)).slice(0, 6),
           closed: /this job has expired|no longer available/i.test(textOf(root, ".jobsearch-JobInfoHeader-expiredHeader, [data-testid='expired-job-message']")) };
+      },
+      itemNew(pane) {  // the posting pane since Indeed's 2026 redesign: named by data-testid, no #jobDescriptionText
+        const heading = one(pane, '[data-testid="vj-job-description-heading"]');
+        const description = clean(heading && heading.parentElement ? heading.parentElement.innerText : "", 30000).replace(/^Full job description\s*/i, "");
+        if (description.length < 80) return null;
+        const summary = lines(one(pane, '[data-testid="structured-job-summary"]')).filter((l) => !/^job details$/i.test(l));
+        const meta = lines(one(pane, '[data-testid="company-info-metadata"]'));
+        const companyLink = [...pane.querySelectorAll('a[href*="/cmp/"]')].find((a) => clean(a.innerText).length > 1);
+        const company = clean(companyLink ? companyLink.innerText : meta[0] || "", 200).split("\n")[0];
+        const location = meta.find((l) => l !== company && !/^\d+(\.\d)? ?(out of|★)/.test(l)) || summary.find((l) => /,\s?[A-Z]{2}\b/.test(l)) || "";
+        const title = textOf(pane, '[data-testid="vj-job-title"], [data-testid="company-info-title-row"]').split("\n")[0].replace(/\s*-\s*job post$/i, "");
+        const info = summary.join("\n");
+        const apply = textOf(pane, '[data-testid="viewjob-indeed-apply"]');
+        return { title, company, location, pay_text: payText(summary), job_type: jobType(info), remote: remoteOf(`${title} ${location} ${info}`),
+          description, tags: summary.filter((l) => l !== location && !PAY.test(l)).slice(0, 6),
+          easy_apply: !!apply && !/company site/i.test(apply),
+          closed: /this job has expired|no longer (available|accepting applications)/i.test(clean(pane.innerText, 2000)) };
       },
     },
     {
