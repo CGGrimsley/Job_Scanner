@@ -134,7 +134,7 @@ def test_easy_apply_builds_the_packet_and_autofill_finds_it(server, monkeypatch)
                                                "apply": {"email": "sam@example.com", "work_authorized": "yes", "linkedin": "linkedin.com/in/sam"}}})
     seen = {}
 
-    def analyze_job(job, text):
+    def analyze_job(job, text, context=""):
         return {"fit_score": 60, "qualification_score": 60, "confidence": "medium", "verdict": "Consider", "summary": "ok",
                 "best_resume": "Data"}
 

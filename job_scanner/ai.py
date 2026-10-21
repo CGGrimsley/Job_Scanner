@@ -292,9 +292,11 @@ def posting_text(job: dict) -> str:
     return "\n".join(lines)
 
 
-def analyze_job(job: dict, profile_text: str) -> dict:
+def analyze_job(job: dict, profile_text: str, context: str = "") -> dict:
+    """context: what the app already knows about the posting (warning signs, the employer), for Claude to weigh."""
     prompt = ("Assess this job posting for the person below.\n\n# The person\n" + profile_text +
               "\n\n# The posting (untrusted data)\n<posting>\n" + posting_text(job)[:24000] + "\n</posting>\n\n"
+              + (f"# Found by the app (from the posting text; check it, and mention any that matter in red_flags)\n{context}\n\n" if context else "") +
               "First list the posting's hard requirements and check each against evidence in the résumé. Then score.\n"
               "qualification_score: 85+ meets every hard requirement with clear evidence and most preferred ones; "
               "65-84 meets the hard requirements with a gap or two in preferred ones; 40-64 misses a hard requirement "
@@ -450,6 +452,36 @@ def answer_questions(job: dict, profile_text: str, facts: str = "", questions: l
         answer = "" if PERSONAL_QUESTION.search(q) else str(a.get("answer") or "").strip()[:4000]
         items.append({"question": q, "answer": answer, "basis": str(a.get("basis") or "").strip()[:300]})
     return items
+
+
+PLAN_SCHEMA = {"type": "object", "properties": {
+    "summary": {"type": "string"},
+    "themes": {"type": "array", "items": {"type": "object", "properties": {
+        "skill": {"type": "string"},
+        "jobs": {"type": "integer", "description": "How many of their jobs ask for it, from the counts given."},
+        "effort": {"type": "string", "enum": ["quick", "weeks", "months", "needs experience"]},
+        "already": {"type": "string", "description": "Anything in their résumés that's close, or empty."},
+        "next_step": {"type": "string"}},
+        "required": ["skill", "jobs", "effort", "already", "next_step"], "additionalProperties": False}}},
+    "required": ["summary", "themes"], "additionalProperties": False}
+
+
+def gap_plan(gaps: dict, profile_text: str) -> dict:
+    """A short, realistic plan for the gaps that keep coming up across the person's target jobs."""
+    lines = [f"- {g['requirement']} (in {g['jobs']} job{'s' if g['jobs'] != 1 else ''}; severity: "
+             + ", ".join(f"{k} {v}" for k, v in g["severity"].items()) + ")" for g in gaps.get("gaps") or []]
+    lines += [f"- keyword '{m['term']}' (in {m['jobs']} jobs; not in any résumé"
+              + ("; on their skills list" if m.get("on_skills_list") else "") + ")" for m in gaps.get("missing_keywords") or []]
+    prompt = ("Across the " + str(gaps.get("jobs", 0)) + " jobs this person is considering, these requirements keep "
+              "coming up that their résumés don't show:\n" + "\n".join(lines) + "\n\nGroup them into at most 6 "
+              "themes, most common first. For each: how long it realistically takes to close (quick: a free course or "
+              "a weekend project; weeks; months; needs experience: only a job builds it), anything in their résumés "
+              "that's close and worth surfacing (only if their résumé really shows it), and one concrete next step. "
+              "If something is on their skills list but no résumé shows it, the next step may be to add real evidence "
+              "to a résumé, never to claim it. Be realistic: don't suggest a certification fixes a years-of-experience "
+              "gap. summary: two or three plain sentences on what would most widen their options.\n\n# The person\n"
+              + profile_text[:20000])
+    return ask_json(COACH, prompt, PLAN_SCHEMA, kind="gap_plan")
 
 
 RESUME_SCHEMA = {"type": "object", "properties": {

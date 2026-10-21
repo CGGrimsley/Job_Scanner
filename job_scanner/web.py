@@ -10,12 +10,13 @@ import json
 import mimetypes
 import os
 import threading
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, advice, ai, docx, jobs, pdf, places, profile, resume, store
+from . import __version__, advice, ai, docx, insights, jobs, pdf, places, profile, resume, signals, store
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -116,18 +117,18 @@ def make_handler(ledger: jobs.Ledger):
         p = current_profile()
         fp = profile.fingerprint(p)
         if not force and jobs.ai_current(rec, fp):
-            return {"job": jobs.public(rec), "mark": jobs.mark_for(rec), "cached": True}
+            return {"job": ledger.public(rec), "mark": ledger.mark(rec), "cached": True}
         if auto:
             s = app_settings()
             if not s["auto_analyze"]:
-                return {"skipped": "Automatic analysis is off (turn it on in Setup).", "mark": jobs.mark_for(rec)}
+                return {"skipped": "Automatic analysis is off (turn it on in Setup).", "mark": ledger.mark(rec)}
             if rec["rules"]["score"] < int(s["auto_min_score"]):
                 return {"skipped": f"Rules score {rec['rules']['score']} is under {s['auto_min_score']}, so Claude wasn't asked.",
-                        "mark": jobs.mark_for(rec)}
+                        "mark": ledger.mark(rec)}
             if ai.over_limit():
-                return {"skipped": "Today's Claude limit is used up (change it in Setup).", "mark": jobs.mark_for(rec)}
+                return {"skipped": "Today's Claude limit is used up (change it in Setup).", "mark": ledger.mark(rec)}
             if not rec.get("description"):
-                return {"skipped": "Open the posting so its full description is captured first.", "mark": jobs.mark_for(rec)}
+                return {"skipped": "Open the posting so its full description is captured first.", "mark": ledger.mark(rec)}
         if profile.is_empty(p):
             raise BadRequest("Fill in your Profile first (target roles, skills and résumé) so Claude has something to go on.")
         with analyzing_lock:
@@ -135,10 +136,11 @@ def make_handler(ledger: jobs.Ledger):
         with lock:
             rec = ledger.get(key)
             if not force and jobs.ai_current(rec, fp):  # someone else just did it
-                return {"job": jobs.public(rec), "mark": jobs.mark_for(rec), "cached": True}
-            out = ai.analyze_job(rec, profile.for_prompt(p))
+                return {"job": ledger.public(rec), "mark": ledger.mark(rec), "cached": True}
+            warn = signals.warnings(rec, ledger.siblings(rec))
+            out = ai.analyze_job(rec, profile.for_prompt(p), "\n".join("- " + w["text"] for w in warn))
             rec = ledger.set_analysis(key, out, fp)
-        return {"job": jobs.public(rec), "mark": jobs.mark_for(rec)}
+        return {"job": ledger.public(rec), "mark": ledger.mark(rec)}
 
     def write_letter(key: str, data: dict) -> dict:
         rec = ledger.get(key)
@@ -223,7 +225,7 @@ def make_handler(ledger: jobs.Ledger):
         if rec.get("status") in ("", "dismissed"):
             ledger.update(key, {"status": "saved"})
         rec = ledger.set_doc(key, "packet", {"resume": name})
-        return {"job": jobs.public(rec), "mark": jobs.mark_for(rec), "errors": errors}
+        return {"job": ledger.public(rec), "mark": ledger.mark(rec), "errors": errors}
 
     def autofill(url: str) -> dict:
         """What the extension fills an application form with: the person's details, plus the job's letter and
@@ -345,6 +347,11 @@ def make_handler(ledger: jobs.Ledger):
                 self._error(str(e))
             except ai.AIError as e:
                 self._error(str(e), HTTPStatus.BAD_GATEWAY)
+            except Exception as e:  # a bug shouldn't drop the connection without a word
+                import traceback
+
+                traceback.print_exc()
+                self._error(f"Something went wrong in Job Scanner: {type(e).__name__}: {e}", HTTPStatus.INTERNAL_SERVER_ERROR)
 
         # -- GET --
         def do_GET(self):
@@ -364,7 +371,7 @@ def make_handler(ledger: jobs.Ledger):
                     rec = ledger.get(f"{q.get('source', '')}:{q.get('id', '')}")
                     if rec is None:
                         return self._error("Not captured yet.", HTTPStatus.NOT_FOUND)
-                    return self._json({"job": jobs.public(rec), "mark": jobs.mark_for(rec)})
+                    return self._json({"job": ledger.public(rec), "mark": ledger.mark(rec)})
                 if path == "/api/capture/export":  # a file for the extension to attach to an application form
                     rec = ledger.get(q.get("key", ""))
                     if rec is None:
@@ -384,7 +391,8 @@ def make_handler(ledger: jobs.Ledger):
             if path == "/api/jobs":
                 recs = ledger.listing(q)
                 limit = int(q.get("limit") or 300)
-                return self._json({"jobs": [jobs.public(r) for r in recs[:limit]], "total": len(recs)})
+                idx = ledger.index()
+                return self._json({"jobs": [ledger.public(r, idx) for r in recs[:limit]], "total": len(recs)})
             if path == "/api/jobs.csv":
                 return self._send(ledger.csv().encode("utf-8"), "text/csv; charset=utf-8",
                                   extra={"Content-Disposition": 'attachment; filename="jobs.csv"'})
@@ -397,11 +405,18 @@ def make_handler(ledger: jobs.Ledger):
                 if rec is None:
                     raise KeyError(key)
                 return self._file(*export_doc(rec, q.get("doc", "letter"), q.get("format", "pdf")))
+            if path == "/api/insights":
+                recs = list(ledger.jobs.values())
+                p = current_profile()
+                return self._json({"accuracy": insights.accuracy(recs), "skills": insights.skill_gaps(recs, p),
+                                   "pay": insights.pay_report(recs, p), "plan": store.read_json("insights.json", {}).get("plan"),
+                                   "week": insights.weekly(recs, datetime.now(timezone.utc))})
             if path.startswith("/api/jobs/"):
                 rec = ledger.get(path[len("/api/jobs/"):])
                 if rec is None:
                     raise KeyError(path)
-                return self._json({"job": jobs.public(rec), "todo": advice.nudges(rec),
+                return self._json({"job": ledger.public(rec), "todo": advice.nudges(rec),
+                                   "pay": insights.pay_position(rec, list(ledger.jobs.values())),
                                    "ai_current": jobs.ai_current(rec, profile.fingerprint(current_profile()))})
             if path == "/api/places":
                 return self._json({"places": places.search(q.get("q", ""))})
@@ -444,7 +459,7 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/status":
                     key = f"{data.get('source', '')}:{data.get('id', '')}"
                     rec = ledger.update(key, {"status": data.get("status", "")})
-                    return self._json({"mark": jobs.mark_for(rec)})
+                    return self._json({"mark": ledger.mark(rec)})
                 return self._error("Not found", HTTPStatus.NOT_FOUND)
             if not self._same_origin():
                 return self._error("Forbidden", HTTPStatus.FORBIDDEN)
@@ -479,6 +494,16 @@ def make_handler(ledger: jobs.Ledger):
                 return self._json({"settings": app_settings(), "ai": ai.describe_backend()})
             if path == "/api/token/rotate":
                 return self._json({"token": store.pairing_token(rotate=True)})
+            if path == "/api/insights/plan":
+                p = current_profile()
+                gaps = insights.skill_gaps(list(ledger.jobs.values()), p)
+                if not gaps["gaps"] and not gaps["missing_keywords"]:
+                    raise BadRequest("No gaps to plan for yet: have Claude read a few jobs you'd consider first.")
+                plan = {**ai.gap_plan(gaps, profile.for_prompt(p)), "at": jobs.now_iso(), "jobs": gaps["jobs"]}
+                saved = store.read_json("insights.json", {})
+                saved["plan"] = plan
+                store.write_json("insights.json", saved)
+                return self._json({"plan": plan})
             if path == "/api/rescore":
                 return self._json({"rescored": ledger.rescore_all(current_profile())})
             if path == "/api/jobs/clear":
@@ -489,13 +514,13 @@ def make_handler(ledger: jobs.Ledger):
                 if action == "analyze":
                     return self._json(analyze(key, force=bool(data.get("force"))))
                 if action == "cover-letter":
-                    return self._json({"job": jobs.public(write_letter(key, data))})
+                    return self._json({"job": ledger.public(write_letter(key, data))})
                 if action == "tailor":
-                    return self._json({"job": jobs.public(tailor(key, data))})
+                    return self._json({"job": ledger.public(tailor(key, data))})
                 if action == "easy-apply":
                     return self._json(easy_apply(key, data))
                 if action == "answers":
-                    return self._json({"job": jobs.public(ledger.set_doc(key, "answers", {"items": answers(key)}))})
+                    return self._json({"job": ledger.public(ledger.set_doc(key, "answers", {"items": answers(key)}))})
                 if action == "message":
                     rec = ledger.get(key)
                     if rec is None:
@@ -504,9 +529,9 @@ def make_handler(ledger: jobs.Ledger):
                     if kind not in ai.MESSAGE_KINDS:
                         raise BadRequest("Unknown kind of message.")
                     msg = ai.draft_message(rec, profile.for_prompt(current_profile()), kind, rec.get("notes") or "")
-                    return self._json({"job": jobs.public(ledger.set_doc(key, f"draft_{kind}", msg)), "message": msg})
+                    return self._json({"job": ledger.public(ledger.set_doc(key, f"draft_{kind}", msg)), "message": msg})
                 if action == "update":
-                    return self._json({"job": jobs.public(ledger.update(key, data))})
+                    return self._json({"job": ledger.public(ledger.update(key, data))})
                 if action == "delete":
                     ledger.delete(key)
                     return self._json({"ok": True})
