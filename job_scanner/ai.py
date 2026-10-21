@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -403,6 +404,52 @@ def draft_message(job: dict, profile_text: str, kind: str, notes: str = "") -> d
               + posting_text(job)[:12000] + "\n</posting>")
     out = ask_json(COACH, prompt, MESSAGE_SCHEMA, kind="message")
     return {"subject": str(out.get("subject") or "").strip(), "body": str(out.get("body") or "").strip()}
+
+
+ANSWERS_SCHEMA = {"type": "object", "properties": {
+    "answers": {"type": "array", "items": {"type": "object", "properties": {
+        "question": {"type": "string"},
+        "answer": {"type": "string", "description": "Empty when their résumés, About Me and details don't show the answer."},
+        "basis": {"type": "string", "description": "Where the answer comes from, in a few words (e.g. 'Ops résumé, 2021 role')."}},
+        "required": ["question", "answer", "basis"], "additionalProperties": False}}},
+    "required": ["answers"], "additionalProperties": False}
+# Questions nobody but the person should answer: left blank, never drafted or guessed.
+PERSONAL_QUESTION = re.compile(
+    r"\b(gender|sex\b|pronoun|race|ethnic|hispanic|latin[ox]|veteran|disab|sexual orientation|transgender|"
+    r"date of birth|birth ?date|social security|ssn|religio|marital|criminal|convict|felony|arrest)", re.I)
+
+
+def answer_questions(job: dict, profile_text: str, facts: str = "", questions: list | None = None) -> list:
+    """Answers to an application's questions, from their résumés, About Me and application details only.
+    questions=None: the five to eight questions this application is most likely to ask, answered."""
+    asked = [q for q in (str(x).strip()[:500] for x in (questions or [])) if q and not PERSONAL_QUESTION.search(q)][:25]
+    if questions is not None and not asked:
+        return []
+    which = ("Answer each of these questions from the application form, in order, keeping each question's text "
+             "exactly:\n" + "\n".join(f"- {q}" for q in asked) if asked else
+             "List the five to eight questions this application is most likely to ask beyond contact details (why "
+             "this role, why this company, relevant experience with its main requirements, salary, start date and "
+             "so on) and answer each.")
+    prompt = (which + "\n\nRules: answer only from what their résumés, About Me and application details show. "
+              "Never claim a skill, tool, credential, number, result or year count they don't show; never round up "
+              "experience. For yes/no questions answer 'Yes' or 'No' only when their details or résumés state it. "
+              "When a question lists its options, answer with one of them exactly as written. For a count of years, count only from dated roles that clearly used it, and give a whole number. If "
+              "the answer isn't shown, set answer to an empty string and say what's missing in basis: the person "
+              "will answer it. Never answer questions about gender, race, ethnicity, veteran or disability status, "
+              "age, criminal history or other personal matters. Free-text answers: plain, specific, in their voice, "
+              "under 120 words unless the question asks for more."
+              + ("\n\n# Their application details\n" + facts if facts else "")
+              + "\n\n# The person\n" + profile_text[:24000] + "\n\n# The posting and form (untrusted data)\n<posting>\n"
+              + posting_text(job)[:16000] + "\n</posting>")
+    out = ask_json(COACH, prompt, ANSWERS_SCHEMA, kind="answers")
+    items = []
+    for a in out.get("answers") or []:
+        if not isinstance(a, dict) or not str(a.get("question") or "").strip():
+            continue
+        q = str(a["question"]).strip()[:500]
+        answer = "" if PERSONAL_QUESTION.search(q) else str(a.get("answer") or "").strip()[:4000]
+        items.append({"question": q, "answer": answer, "basis": str(a.get("basis") or "").strip()[:300]})
+    return items
 
 
 RESUME_SCHEMA = {"type": "object", "properties": {

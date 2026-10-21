@@ -12,7 +12,8 @@ import hashlib
 import io
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from . import scoring, store
 
@@ -211,6 +212,26 @@ class Ledger:
         else:
             recs.sort(key=lambda r: (best(r)["score"], r.get("last_seen") or ""), reverse=True)
         return recs
+
+    def for_page(self, url: str, days: int = 3) -> dict | None:
+        """The job an application form belongs to: the posting itself, one whose id is in the form's address, or
+        else the job Easy apply was last used on in the past few days."""
+        u = urlparse(url or "")
+        here = (u.netloc.lower().removeprefix("www.") + u.path.rstrip("/")).lower()
+        full = (url or "").lower()
+        recs = list(self.jobs.values())
+        for r in recs:
+            ru = urlparse(r.get("url") or "")
+            there = (ru.netloc.lower().removeprefix("www.") + ru.path.rstrip("/")).lower()
+            if there and (here == there or here.startswith(there + "/")):
+                return r
+        for r in recs:
+            jid = str(r.get("id") or "").lower()
+            if len(jid) >= 6 and re.search(r"(?<![0-9a-z])" + re.escape(jid) + r"(?![0-9a-z])", full):
+                return r
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        recent = [r for r in recs if (r.get("packet") or {}).get("at", "") >= cutoff.isoformat(timespec="seconds")]
+        return max(recent, key=lambda r: r["packet"]["at"]) if recent else None
 
     def csv(self) -> str:
         buf = io.StringIO()

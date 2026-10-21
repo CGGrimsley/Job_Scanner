@@ -41,3 +41,13 @@ def test_cover_letter_prompt(monkeypatch):
 def test_locations_keep_their_commas():
     assert profile.clean({"locations": "Raleigh, NC\nNorth Carolina"})["locations"] == ["Raleigh, NC", "North Carolina"]
     assert profile.clean({"locations": ["Durham, NC"]})["locations"] == ["Durham, NC"]
+
+
+def test_application_details_are_cleaned_and_dont_stale_analyses():
+    from job_scanner import profile
+    base = profile.clean({"skills": "SQL"})
+    p = profile.clean({"skills": "SQL", "apply": {"email": " sam@example.com ", "sponsorship": "no", "relocate": "maybe",
+                                                  "github": "github.com/sam", "junk": "x"}})
+    assert p["apply"] == {"email": "sam@example.com", "github": "https://github.com/sam", "sponsorship": "no"}
+    assert profile.fingerprint(p) == profile.fingerprint(base)
+    assert profile.apply_facts(p) == "Will need visa sponsorship: No"
