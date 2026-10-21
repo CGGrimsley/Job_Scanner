@@ -97,3 +97,27 @@ def test_places_and_cover_letter_endpoints(server, monkeypatch):
     status, out = call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Data", "tone": "warm"})
     assert out["job"]["cover_letter"] == {**out["job"]["cover_letter"], "text": "Letter from Data (warm)", "resume": "Data"}
     assert call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Nope"})[0] == 400
+
+
+def test_tailor_message_export_and_todo(server, monkeypatch):
+    from job_scanner import ai
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Data Analyst", "company": "Acme"}]}, tok)
+    call(server + "/api/profile", {"profile": {"resumes": [{"name": "Data", "text": "Built 12 dashboards"}]}})
+    monkeypatch.setattr(ai, "tailor_resume", lambda job, text, name: {
+        "resume": "# Sam\n- Built 12 dashboards\n- Cut costs 30%", "changes": ["Moved dashboards up"], "left_out": ["Power BI"]})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/tailor", {})
+    t = out["job"]["tailored"]
+    assert status == 200 and t["check"] == ["Cut costs 30%"] and t["left_out"] == ["Power BI"]
+    with urllib.request.urlopen(server + "/api/jobs/indeed:abc123def456/export?doc=resume&format=pdf") as r:
+        assert r.read(5) == b"%PDF-" and "Resume%20-%20Acme" in r.headers["Content-Disposition"]
+    assert call(server + "/api/jobs/indeed:abc123def456/export?doc=letter&format=pdf")[0] == 400  # no letter yet
+    monkeypatch.setattr(ai, "draft_message", lambda job, text, kind, notes: {"subject": "Following up", "body": "Hi [Name]"})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/message", {"kind": "follow_up"})
+    assert status == 200 and out["message"]["subject"] == "Following up"
+    assert call(server + "/api/jobs/indeed:abc123def456/message", {"kind": "rant"})[0] == 400
+    call(server + "/api/jobs/indeed:abc123def456/update", {"status": "applied"})
+    _, out = call(server + "/api/todo")
+    assert out["todo"][0]["id"] == "reach-out"
+    call(server + "/api/jobs/indeed:abc123def456/update", {"done": "reach-out"})
+    assert call(server + "/api/todo")[1]["todo"] == []

@@ -125,10 +125,13 @@ class Ledger:
                     rec.setdefault("history", []).append({"at": now_iso(), "status": st})
                     if st == "applied" and not rec.get("applied_at"):
                         rec["applied_at"] = now_iso()[:10]
-            for k in ("notes",):
+            for k, n in (("notes", 5000), ("contact", 300)):
                 if k in changes:
-                    rec[k] = str(changes[k] or "")[:5000]
-            for k in ("applied_at", "follow_up"):
+                    rec[k] = str(changes[k] or "")[:n]
+            if "done" in changes:  # a tracker to-do the person has dealt with (or dismissed)
+                nid = str(changes["done"])[:80]
+                rec["done"] = [d for d in rec.get("done", []) if d != nid] + [nid]
+            for k in ("applied_at", "follow_up", "interview_at"):
                 if k in changes:
                     v = str(changes[k] or "")
                     if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
@@ -142,6 +145,14 @@ class Ledger:
         with _lock:
             rec = self.jobs[key]
             rec["ai"] = {**analysis, "at": now_iso(), "profile": profile_fp, "desc": desc_hash(rec)}
+            self.save()
+            return rec
+
+    def set_doc(self, key: str, field: str, doc: dict) -> dict:
+        """Something Claude wrote for this job: a tailored résumé, or a follow-up or thank-you message."""
+        with _lock:
+            rec = self.jobs[key]
+            rec[field] = {**doc, "at": now_iso()}
             self.save()
             return rec
 
