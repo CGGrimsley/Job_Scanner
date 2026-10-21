@@ -32,7 +32,7 @@ def test_cli_error_explains_sign_in(monkeypatch):
     monkeypatch.setenv("JOB_SCANNER_AI", "cli")
     monkeypatch.setattr(ai.shutil, "which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr(ai.subprocess, "run", fake_run({}, {"is_error": True, "result": "Invalid API key · Please run /login"}, 1))
-    with pytest.raises(ai.AIError, match="sign in"):
+    with pytest.raises(ai.AIError, match="signed in"):
         ai.analyze_job({"title": "x"}, "y")
 
 

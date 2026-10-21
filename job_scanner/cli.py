@@ -60,8 +60,7 @@ def main(argv=None) -> int:
         print(f"Claude: {b['label']}")
         if b["backend"]:
             try:
-                ai.ask_json("Answer briefly.", "Reply with ok=true.", {"type": "object", "properties": {"ok": {"type": "boolean"}},
-                            "required": ["ok"], "additionalProperties": False}, kind="doctor")
+                ai.test_call()
                 print("Test call: OK")
             except ai.AIError as e:
                 print(f"Test call failed: {e}")

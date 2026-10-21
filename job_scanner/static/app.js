@@ -49,7 +49,9 @@ async function route() {
 addEventListener("hashchange", route);
 
 /* ---------- jobs ---------- */
-const filters = { text: "", source: "", verdict: "", sort: "score", status: "" };
+const filters = { text: "", source: "", verdict: "", sort: "score", status: "", remote: "", min_pay: "", max_years: "", degree: "", clearance: "" };
+const FILTER_SELECTS = ["source", "verdict", "sort", "remote", "max_years", "degree", "clearance"];
+const factTags = (j) => (j.fact_tags || []).map((t) => `<span class="tag fact">${esc(t)}</span>`).join("");
 function jobRow(j) {
   const b = j.best, r = j.rules || {};
   const why = j.ai ? j.ai.summary : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
@@ -59,7 +61,7 @@ function jobRow(j) {
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
@@ -87,22 +89,32 @@ async function showJobs() {
       <input type="search" id="q" placeholder="Search title, company, location" value="${esc(filters.text)}">
       <select id="source"><option value="">All sites</option>${sources}</select>
       <select id="verdict"><option value="">Any verdict</option><option>Apply</option><option>Consider</option><option>Skip</option></select>
-      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option></select>
+      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option><option value="years">Fewest years asked</option></select>
       <a class="btn small" href="/api/jobs.csv">Export CSV</a>
     </div>
+    <div class="toolbar">
+      <select id="remote" title="Work arrangement"><option value="">Any arrangement</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option></select>
+      <input type="number" id="min_pay" min="0" step="5000" placeholder="Min pay listed, e.g. 70000" value="${esc(filters.min_pay)}" title="Only jobs whose listed pay reaches this (yearly; hourly counts at 2,080 hours). Jobs with no pay listed are hidden.">
+      <select id="max_years" title="Years of experience the posting asks for"><option value="">Any experience</option><option value="0">No years asked</option><option value="1">Up to 1 year</option><option value="2">Up to 2 years</option><option value="3">Up to 3 years</option><option value="5">Up to 5 years</option><option value="8">Up to 8 years</option></select>
+      <select id="degree" title="Degree the posting requires"><option value="">Any degree</option><option value="high_school">No degree required</option><option value="associate">Associate's at most</option><option value="bachelor">Bachelor's at most</option><option value="master">Master's at most</option></select>
+      <select id="clearance" title="Security clearance"><option value="">Any clearance</option><option value="none">No clearance</option><option value="obtainable">None, or can get one after hire</option></select>
+    </div>
+    <p class="note">Filters use what each posting says. A posting that doesn't mention years, a degree or a clearance isn't ruled out by those filters. "No degree required" includes postings that accept experience instead.</p>
     <div id="list" class="jobs"></div>`;
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).value = filters[k];
+  for (const k of FILTER_SELECTS) $("#" + k).value = filters[k];
   const load = async () => {
-    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
+    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== ""));
     const out = await api("/api/jobs?" + q);
     const list = $("#list");
-    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : `<div class="empty card">
+    const filtered = FILTER_SELECTS.concat(["text", "min_pay"]).some((k) => k !== "sort" && filters[k] !== "");
+    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : filtered ? `<div class="empty card"><p><b>No jobs match these filters.</b></p></div>` : `<div class="empty card">
       <p><b>No jobs yet.</b></p><p>Install the Chrome extension (see <a href="#setup">Setup</a>), then browse LinkedIn, Indeed or NCWorks as usual. Jobs appear here as you scroll.</p></div>`;
     bindRows(list);
   };
   let t;
   $("#q").addEventListener("input", (e) => { filters.text = e.target.value; clearTimeout(t); t = setTimeout(load, 250); });
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
+  $("#min_pay").addEventListener("input", (e) => { filters.min_pay = e.target.value; clearTimeout(t); t = setTimeout(load, 400); });
+  for (const k of FILTER_SELECTS) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
   await load();
 }
 
@@ -119,7 +131,7 @@ async function showJob(key) {
       <div style="flex:1">
         <h1>${esc(j.title)}</h1>
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
-        <div>${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
+        <div>${factTags(j)}${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
         <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
           <button class="btn primary" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
           <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
@@ -563,7 +575,15 @@ async function showSetup() {
   view.innerHTML = `<h1>Setup</h1>
     <div class="grid2">
       <div class="card"><h2>1. Claude, on your subscription</h2>
-        <p>Status: <b>${esc(a.label)}</b></p>
+        <p>Status: <b>${esc(a.label)}</b> <button class="btn small" id="test-ai" ${a.backend ? "" : "disabled"}>Test it</button></p>
+        <p id="test-out" class="note"></p>
+        <details ${a.backend ? "" : "open"}><summary>How to sign Claude Code in</summary>
+        <ol class="steps">
+          <li>Open <b>PowerShell</b> (Windows: press the Windows key, type PowerShell, press Enter) or <b>Terminal</b> (Mac).</li>
+          <li>Type <code>claude</code> and press Enter. If it isn't found, install it first: <code>npm install -g @anthropic-ai/claude-code</code>.</li>
+          <li>Choose <b>Claude account with subscription</b>, approve in the browser window that opens, then type <code>/exit</code>.</li>
+          <li>Restart Job Scanner (close its window and run start.bat again), then click <b>Test it</b>.</li>
+        </ol></details>
         ${a.backend === "cli" ? `<p class="note">Job Scanner runs Claude Code on this computer, so its analysis counts against your Claude Pro or Max plan's usage, not a separate bill.</p>` : `
         <ol class="steps">
           <li>Install Claude Code: <code>npm install -g @anthropic-ai/claude-code</code> (or the installer from claude.com/claude-code).</li>
@@ -596,6 +616,14 @@ async function showSetup() {
       <div class="actions"><a class="btn" href="/api/jobs.csv">Export CSV</a><button class="btn" id="rescore">Rescore all jobs</button><button class="btn danger" id="clear">Clear jobs I'm not tracking</button></div>
     </div>`;
   $("#copy").addEventListener("click", async () => { await navigator.clipboard.writeText($("#token").value); toast("Copied."); });
+  $("#test-ai").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    $("#test-out").innerHTML = `<span class="spinner"></span>Asking Claude…`;
+    const r = await api("/api/ai/test", {}).catch((err) => ({ ok: false, error: err.message }));
+    $("#test-out").textContent = r.ok ? "Claude answered. It's working on your subscription." : r.error;
+    $("#test-out").className = "note" + (r.ok ? " ok" : " warn");
+    e.target.disabled = false;
+  });
   $("#rotate").addEventListener("click", async () => {
     if (!confirm("Make a new token? The extension will need the new one.")) return;
     $("#token").value = (await api("/api/token/rotate", {})).token;

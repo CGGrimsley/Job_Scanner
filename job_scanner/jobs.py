@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import scoring, signals, store
+from . import facts, scoring, signals, store
 
 FILE = "jobs.json"
 STATUSES = ("", "saved", "applied", "interviewing", "offer", "rejected", "withdrawn", "dismissed")
@@ -68,6 +68,9 @@ class Ledger:
     def __init__(self):
         self.data = store.read_json(FILE, {"jobs": {}})
         self.data.setdefault("jobs", {})
+        for rec in self.jobs.values():  # jobs saved before facts were read
+            if "facts" not in rec:
+                rec["facts"] = facts.of(rec)
 
     @property
     def jobs(self) -> dict:
@@ -216,8 +219,24 @@ class Ledger:
             return before - len(self.jobs)
 
     def listing(self, q: dict) -> list:
-        """Jobs for the app's list, filtered and sorted. q: source, status, verdict, text, sort."""
+        """Jobs for the app's list, filtered and sorted. q: source, status, verdict, text, sort, and the posting's
+        facts: remote (remote|hybrid|onsite), min_pay (listed pay reaches it), max_years (asks for at most that
+        many), degree (needs at most that degree), clearance (none | obtainable)."""
         recs = list(self.jobs.values())
+        if q.get("remote") in ("remote", "hybrid", "onsite"):
+            recs = [r for r in recs if (r.get("rules") or {}).get("remote") == q["remote"]]
+        min_pay = _num(q.get("min_pay"))
+        if min_pay:
+            recs = [r for r in recs if ((r.get("rules") or {}).get("pay_max") or 0) >= min_pay]
+        max_years = _num(q.get("max_years"))
+        if max_years is not None:
+            recs = [r for r in recs if (_years(r) or 0) <= max_years]
+        if q.get("degree") in facts.DEGREES:
+            recs = [r for r in recs if facts.degree_ok((r.get("facts") or {}).get("degree"), q["degree"])]
+        if q.get("clearance") == "none":
+            recs = [r for r in recs if not (r.get("facts") or {}).get("clearance")]
+        elif q.get("clearance") == "obtainable":
+            recs = [r for r in recs if not ((r.get("facts") or {}).get("clearance") or {}).get("must_hold")]
         if not q.get("dupes"):
             recs = collapse(recs, self.index())
         if q.get("source"):
@@ -243,6 +262,8 @@ class Ledger:
             recs.sort(key=lambda r: (r.get("rules") or {}).get("pay_max") or 0, reverse=True)
         elif sort == "follow_up":
             recs.sort(key=lambda r: r.get("follow_up") or "9999")
+        elif sort == "years":
+            recs.sort(key=lambda r: (_years(r) is None, _years(r) or 0, -best(r)["score"]))
         else:
             recs.sort(key=lambda r: (best(r)["score"], r.get("last_seen") or ""), reverse=True)
         return recs
@@ -270,13 +291,18 @@ class Ledger:
     def csv(self) -> str:
         buf = io.StringIO()
         w = csv.writer(buf)
-        cols = ["source", "title", "company", "location", "pay_text", "score", "verdict", "ai_fit", "status",
-                "applied_at", "follow_up", "url", "first_seen", "last_seen", "notes"]
+        cols = ["source", "title", "company", "location", "arrangement", "pay_text", "years_required", "degree",
+                "clearance", "score", "verdict", "ai_fit", "status", "applied_at", "follow_up", "url", "first_seen",
+                "last_seen", "notes"]
         w.writerow(cols)
         for r in self.listing({"sort": "score", "all": True}):
             b = best(r)
+            f = r.get("facts") or {}
             w.writerow([SOURCES.get(r["source"], r["source"]), r.get("title"), r.get("company"), r.get("location"),
-                        r.get("pay_text"), b["score"], b["verdict"], (r.get("ai") or {}).get("fit_score", ""),
+                        (r.get("rules") or {}).get("remote", ""), r.get("pay_text"), _years(r) or "",
+                        facts.labels({"degree": f.get("degree")})[0] if f.get("degree") else "",
+                        facts.labels({"clearance": f.get("clearance")})[0] if f.get("clearance") else "",
+                        b["score"], b["verdict"], (r.get("ai") or {}).get("fit_score", ""),
                         r.get("status"), r.get("applied_at", ""), r.get("follow_up", ""), r.get("url"),
                         r.get("first_seen"), r.get("last_seen"), r.get("notes", "")])
         return buf.getvalue()
@@ -337,6 +363,7 @@ def desc_hash(rec: dict) -> str:
 
 
 def rescore(rec: dict, profile: dict) -> None:
+    rec["facts"] = facts.of(rec)
     r = scoring.score(rec, profile)
     rec["rules"] = r
     scam = [w["text"] for w in signals.warnings(rec) if w["level"] == "scam"]
@@ -344,6 +371,17 @@ def rescore(rec: dict, profile: dict) -> None:
     if scam:
         r["cautions"].insert(0, "Signs of a scam: " + scam[0])
         r["score"], r["verdict"] = min(r["score"], 30), scoring.SKIP
+
+
+def _years(rec: dict):
+    return ((rec.get("facts") or {}).get("years") or {}).get("required")
+
+
+def _num(v):
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def best(rec: dict) -> dict:
@@ -382,7 +420,7 @@ def mark_for(rec: dict, profile: dict | None = None, siblings: list | None = Non
     why = ai.get("summary") or "; ".join((r.get("reasons") or [])[:3] + (r.get("cautions") or [])[:2])
     return {"source": rec["source"], "id": rec["id"], "key": rec["key"], "score": b["score"], "verdict": b["verdict"],
             "by": b["by"], "why": why, "status": status, "status_via": via, "analyzed": bool(ai),
-            "has_description": bool(rec.get("description")),
+            "has_description": bool(rec.get("description")), "facts": facts.labels(rec.get("facts") or {}),
             "warnings": [w for w in warn if w["level"] in ("scam", "ghost")][:3]}
 
 
@@ -390,6 +428,7 @@ def public(rec: dict, siblings: list | None = None) -> dict:
     out = dict(rec)
     out["best"] = best(rec)
     out["source_name"] = SOURCES.get(rec["source"], rec["source"])
+    out["fact_tags"] = facts.labels(rec.get("facts") or {})
     out["warnings"] = signals.warnings(rec, siblings)
     out["also_on"] = [{"key": o["key"], "source": SOURCES.get(o["source"], o["source"]), "url": o.get("url") or "",
                        "status": o.get("status") or "", "title": o.get("title") or ""} for o in siblings or []]

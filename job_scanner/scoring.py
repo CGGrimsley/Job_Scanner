@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from . import facts
+
 HOURS_PER_YEAR = 2080
 APPLY, CONSIDER, SKIP = "Apply", "Consider", "Skip"
 
@@ -254,6 +256,10 @@ def score(job: dict, profile: dict, now: datetime | None = None) -> dict:
     if job.get("applicants") and job["applicants"] >= 200:
         cautions.append(f"{job['applicants']}+ applicants")
         pts -= 3
+    asked = (facts.years(desc) or {}).get("required")
+    have = profile.get("years_experience")
+    if asked and have is not None and asked > have + 1:
+        cautions.append(f"Asks for {asked}+ years; your profile says {have:g}")
 
     pts = max(0, min(100, round(pts)))
 

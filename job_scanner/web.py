@@ -106,6 +106,7 @@ def make_handler(ledger: jobs.Ledger):
     state = {"profile": profile.load()}
     analyzing: dict = {}
     analyzing_lock = threading.Lock()
+    cancelled: set = set()  # automatic reads for tabs that were closed before Claude got to them
 
     def current_profile() -> dict:
         return state["profile"]
@@ -127,6 +128,8 @@ def make_handler(ledger: jobs.Ledger):
                         "mark": ledger.mark(rec)}
             if ai.over_limit():
                 return {"skipped": "Today's Claude limit is used up (change it in Setup).", "mark": ledger.mark(rec)}
+            if ai.limited():
+                return {"skipped": ai.limited(), "mark": ledger.mark(rec)}
             if not rec.get("description"):
                 return {"skipped": "Open the posting so its full description is captured first.", "mark": ledger.mark(rec)}
         if profile.is_empty(p):
@@ -138,7 +141,9 @@ def make_handler(ledger: jobs.Ledger):
             if not force and jobs.ai_current(rec, fp):  # someone else just did it
                 return {"job": ledger.public(rec), "mark": ledger.mark(rec), "cached": True}
             warn = signals.warnings(rec, ledger.siblings(rec))
-            out = ai.analyze_job(rec, profile.for_prompt(p), "\n".join("- " + w["text"] for w in warn))
+            cancelled.discard(key)
+            out = ai.analyze_job(rec, profile.for_prompt(p), "\n".join("- " + w["text"] for w in warn),
+                                 priority=1 if auto else 0, cancelled=(lambda: key in cancelled) if auto else None, auto=auto)
             rec = ledger.set_analysis(key, out, fp)
         return {"job": ledger.public(rec), "mark": ledger.mark(rec)}
 
@@ -346,7 +351,10 @@ def make_handler(ledger: jobs.Ledger):
             except resume.ResumeError as e:
                 self._error(str(e))
             except ai.AIError as e:
-                self._error(str(e), HTTPStatus.BAD_GATEWAY)
+                if e.kind == "skipped":
+                    return self._json({"skipped": str(e)})
+                self._json({"error": str(e), "kind": e.kind, "retry_after": e.retry_after},
+                           HTTPStatus.TOO_MANY_REQUESTS if e.kind == "limit" else HTTPStatus.BAD_GATEWAY)
             except Exception as e:  # a bug shouldn't drop the connection without a word
                 import traceback
 
@@ -447,6 +455,12 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/cover-letter":
                     rec = write_letter(f"{data.get('source', '')}:{data.get('id', '')}", data)
                     return self._json({"letter": rec["cover_letter"]["text"]})
+                if path == "/api/capture/cancel":  # tabs closed: drop their automatic reads that haven't started
+                    keys = [str(k)[:200] for k in (data.get("keys") or [])[:200]]
+                    cancelled.update(keys)
+                    if len(cancelled) > 2000:
+                        cancelled.clear()
+                    return self._json({"ok": True, "queued": ai.gate.queued()})
                 if path == "/api/capture/easy-apply":
                     return self._json(easy_apply(f"{data.get('source', '')}:{data.get('id', '')}", data))
                 if path == "/api/capture/autofill":
@@ -494,6 +508,12 @@ def make_handler(ledger: jobs.Ledger):
                 return self._json({"settings": app_settings(), "ai": ai.describe_backend()})
             if path == "/api/token/rotate":
                 return self._json({"token": store.pairing_token(rotate=True)})
+            if path == "/api/ai/test":
+                try:
+                    ai.test_call()
+                    return self._json({"ok": True, "ai": ai.describe_backend()})
+                except ai.AIError as e:
+                    return self._json({"ok": False, "error": str(e), "kind": e.kind})
             if path == "/api/insights/plan":
                 p = current_profile()
                 gaps = insights.skill_gaps(list(ledger.jobs.values()), p)

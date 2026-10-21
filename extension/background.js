@@ -7,6 +7,7 @@ let timer = null;
 let retryDelay = 0;
 const session = { sent: 0, alerts: 0, error: "" };
 const perTab = new Map(); // tabId -> Set of job ids the app has accepted from that page
+const pendingAuto = new Map(); // tabId -> keys of automatic Claude reads still waiting, dropped if the tab closes
 
 const settings = () => chrome.storage.local.get(DEFAULTS);
 
@@ -32,7 +33,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   } else if (msg.type === "status") {
     reply(session);
   } else if (msg.type === "ping") {
-    call("/api/capture/ping").then(reply);
+    checkHealth().then(reply);
     return true;
   } else if (msg.type === "get-job") {
     call(`/api/capture/job?source=${encodeURIComponent(msg.source)}&id=${encodeURIComponent(msg.id)}`).then(reply);
@@ -40,9 +41,20 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   } else if (msg.type === "analyze") {
     settings().then((s) => {
       if (!s.enabled && msg.auto) return reply({ ok: false, error: "Paused." });
-      call("/api/capture/analyze", { source: msg.source, id: msg.id, auto: !!msg.auto, force: !!msg.force }).then(reply);
+      const key = `${msg.source}:${msg.id}`;
+      if (msg.auto && tab != null) (pendingAuto.get(tab) || pendingAuto.set(tab, new Set()).get(tab)).add(key);
+      call("/api/capture/analyze", { source: msg.source, id: msg.id, auto: !!msg.auto, force: !!msg.force }).then((r) => {
+        if (tab != null && pendingAuto.has(tab)) pendingAuto.get(tab).delete(key);
+        reply(r);
+      });
     });
     return true; // Claude takes a little while
+  } else if (msg.type === "site-health") {
+    if (tab != null && !msg.ok) {
+      chrome.action.setBadgeText({ tabId: tab, text: "!" });
+      chrome.action.setBadgeBackgroundColor({ tabId: tab, color: "#b7791f" });
+      chrome.action.setTitle({ tabId: tab, title: "Job Scanner: this page isn't being read properly. Click, then Copy diagnostics." });
+    }
   } else if (msg.type === "cover-letter") {
     call("/api/capture/cover-letter", { source: msg.source, id: msg.id }).then(reply);
     return true;
@@ -83,6 +95,7 @@ async function flush() {
     timer = setTimeout(flush, retryDelay);
     return;
   }
+  if (retryDelay || session.error) chrome.action.setBadgeText({ text: "" });
   retryDelay = 0;
   session.error = "";
   session.sent += (out.added || 0) + (out.updated || 0);
@@ -110,8 +123,13 @@ function tell(tab, status) {
   chrome.action.setBadgeText({ tabId: tab, text: status.ok ? (status.count ? String(status.count) : "") : "off" });
   chrome.action.setBadgeBackgroundColor({ tabId: tab, color: status.ok ? "#0f6b4f" : "#cf222e" });
 }
-chrome.tabs.onRemoved.addListener((tab) => perTab.delete(tab));
-chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) perTab.delete(tab); });
+function dropAuto(tab) {
+  const keys = [...(pendingAuto.get(tab) || [])];
+  pendingAuto.delete(tab);
+  if (keys.length) call("/api/capture/cancel", { keys });
+}
+chrome.tabs.onRemoved.addListener((tab) => { perTab.delete(tab); dropAuto(tab); });
+chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) { perTab.delete(tab); dropAuto(tab); } });
 
 chrome.notifications.onClicked.addListener((id) => { if (id.startsWith("https://")) chrome.tabs.create({ url: id }); });
 
@@ -211,5 +229,16 @@ async function checkForUpdate() {
   chrome.runtime.reload();
 }
 chrome.alarms.create("scanner-update", { periodInMinutes: 30 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === "scanner-update") checkForUpdate(); });
-chrome.runtime.onStartup.addListener(checkForUpdate);
+chrome.alarms.create("scanner-health", { periodInMinutes: 5 });
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === "scanner-update") checkForUpdate(); if (a.name === "scanner-health") checkHealth(); });
+chrome.runtime.onStartup.addListener(() => { checkForUpdate(); checkHealth(); });
+chrome.runtime.onInstalled.addListener(checkHealth);
+
+// The icon's default badge says whether the app can be reached: nothing when it can, a red "off" when it can't.
+async function checkHealth() {
+  const out = await call("/api/capture/ping");
+  chrome.action.setBadgeText({ text: out.ok ? "" : "off" });
+  chrome.action.setBadgeBackgroundColor({ color: out.ok ? "#0f6b4f" : "#cf222e" });
+  chrome.action.setTitle({ title: out.ok ? "Job Scanner: connected" : `Job Scanner: ${out.error}` });
+  return out;
+}
