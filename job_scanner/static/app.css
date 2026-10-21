@@ -126,3 +126,4 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 .warnings .warn-ghost b, .warnings .warn-caution b { color: var(--consider); }
 .warnings { border-left: 4px solid var(--consider); }
 @media (max-width: 760px) { .tbl { display: block; overflow-x: auto; } }
+.warn-text { color: var(--consider); font-weight: 600; }

@@ -33,12 +33,14 @@ You need Python 3.9+, Chrome, and (for the AI guidance) a Claude Pro or Max subs
 2. **Start the app:** double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux). You can also run `python -m job_scanner serve --open`. The app opens at http://127.0.0.1:8766.
 3. **Fill in your Profile, résumé first.** Upload or paste your résumé (PDF, Word or text). If you keep several targeted versions, add them all. Claude suggests job titles and skills from them, and you can edit those and add your own. Then pick your locations: start typing a city or state and choose it from the list. Finish with your minimum pay, your dealbreakers and your About Me. The more Claude knows, the better its advice.
 4. **Set up Claude on your subscription:**
-   - Install Claude Code: `npm install -g @anthropic-ai/claude-code` (or the installer from claude.com/claude-code).
-   - Run `claude` once in a terminal and sign in with your Claude account.
+   - Install Claude Code: `npm install -g @anthropic-ai/claude-code` (or the installer from claude.com/claude-code). It needs Node.js 22 or newer: check with `node -v`, and on Windows update with `winget install OpenJS.NodeJS.LTS`.
+   - Run `claude` once in a terminal and sign in with your Claude account. If PowerShell says *running scripts is disabled*, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first (or type `claude.cmd`).
    - Restart Job Scanner. Run `python -m job_scanner doctor` to check: it should say *Claude: Your Claude subscription (Claude Code)* and *Test call: OK*.
 5. **Add the extension:** open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the `extension` folder. Then open the extension's **Settings**, paste the pairing token from the app's **Setup** page, and click **Save & test**.
 
 Then browse jobs as usual.
+
+**Start with Windows:** tick *Start Job Scanner when I sign in to Windows* on the Setup page (or run `python -m job_scanner startup on`). It puts a small script in your Startup folder that runs the app with no window.
 
 ## How Claude is used, and how much
 
@@ -48,6 +50,10 @@ Job Scanner runs Claude Code on your computer (`claude -p`). On Windows it start
 - There's a **daily cap** on automatic calls (60 by default). Set both on the Setup page.
 - **Ask Claude** in the panel or the app always works on demand.
 - Each posting is read once. It's read again only if the posting or your profile changes.
+- **Each employer is read once**, with the quick model: what Claude knows about the company in general (it can't browse, so this may be out of date, and it says so when it doesn't recognise an employer rather than guessing). The read is reused for every posting from that company for six months and is shown on the job page.
+- **Your posting goes first.** Anything you ask for runs before automatic reads, and among automatic reads the posting you're looking at now goes first. Closing a tab drops its reads that haven't started.
+- **Failures:** a passing glitch (overloaded, a dropped connection) is retried once. If you hit your plan's usage limit, the app says when it resets and pauses automatic reads until then.
+- **Models:** on Setup, pick the model for the main work (default: whatever your Claude Code uses) and for quick jobs (default Haiku), and whether automatic reads use the quick one to save your plan.
 
 Job postings are untrusted text from the web. Claude runs with no tools, in an empty temporary folder, and is told to treat the posting as data. A posting can't make it do anything except answer the question.
 
@@ -63,11 +69,13 @@ No subscription? Install the `anthropic` package (`pip install anthropic`) and s
 | Greenhouse, Lever, Workday career pages | | ✓ |
 | Any other site | | **Scan this page** in the extension's popup. Select the description first if the page is unusual. |
 
-Sites change their pages often. If a site stops being read properly, open a search or posting, click the extension, then **Copy diagnostics for this page**, and paste the result into an issue. It contains public page data only.
+Sites change their pages often. When the extension finds job cards or a posting it can't read, the panel and the toolbar icon say so (an amber **!**), and the Jobs and Setup pages list which site is affected. The icon shows **off** when it can't reach the app. To get it fixed, open a search or posting, click the extension, then **Copy diagnostics**, and paste the result into an issue. It contains public page data only. `tests/extension/` runs the readers against saved pages in `tests/fixtures/` (needs Node and Playwright).
+
+On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years of experience asked, degree and security clearance, which are read from each posting.
 
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json` and `ai_usage.json`. Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) and `site_health.json`. Nothing personal is ever written into the repo.
 
 ## Credits
 
@@ -80,6 +88,7 @@ python -m job_scanner serve [--port 8766] [--open]   # run the app
 python -m job_scanner doctor                         # check Claude and the data folder
 python -m job_scanner token [--rotate]               # print (or replace) the extension pairing token
 python -m job_scanner reset [--all] [-y]             # clear captured jobs (keeps tracked ones unless --all)
+python -m job_scanner startup [on|off]               # start the app when you sign in to Windows
 ```
 
 ## Development
@@ -100,6 +109,8 @@ The code is laid out as follows:
 - `profile.py`: the profile.
 - `resume.py`: résumé import.
 - `advice.py`: the tracker's to-dos.
+- `facts.py`: years, degree and clearance read from postings.
+- `companies.py`: the one-per-employer read. `health.py`: whether each site is still readable. `startup.py`: Start with Windows.
 - `pdf.py`, `docx.py`: PDF and Word export.
 - `static/`: the web app.
 - `extension/`: the Chrome extension. `capture.js` holds the per-site readers.

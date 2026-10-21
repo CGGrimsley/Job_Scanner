@@ -49,7 +49,9 @@ async function route() {
 addEventListener("hashchange", route);
 
 /* ---------- jobs ---------- */
-const filters = { text: "", source: "", verdict: "", sort: "score", status: "" };
+const filters = { text: "", source: "", verdict: "", sort: "score", status: "", remote: "", min_pay: "", max_years: "", degree: "", clearance: "" };
+const FILTER_SELECTS = ["source", "verdict", "sort", "remote", "max_years", "degree", "clearance"];
+const factTags = (j) => (j.fact_tags || []).map((t) => `<span class="tag fact">${esc(t)}</span>`).join("");
 function jobRow(j) {
   const b = j.best, r = j.rules || {};
   const why = j.ai ? j.ai.summary : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
@@ -59,7 +61,7 @@ function jobRow(j) {
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
@@ -77,39 +79,87 @@ function warningsHtml(ws) {
 function bindRows(root) {
   root.querySelectorAll(".job").forEach((el) => el.addEventListener("click", () => (location.hash = "job/" + encodeURIComponent(el.dataset.key))));
 }
+const SITE_CHECK = { posting: "postings", cards: "search results" };
+function healthWarning() {
+  const bad = [];
+  for (const [src, checks] of Object.entries(S.site_health || {})) {
+    for (const [what, e] of Object.entries(checks)) if (!e.ok) bad.push(`${esc(S.sources[src] || src)} ${SITE_CHECK[what] || what} (since ${esc((e.at || "").slice(0, 10))})`);
+  }
+  return bad.length ? `<div class="card warnings"><b>Job Scanner can't read ${bad.join(", ")}.</b> The site has probably changed its pages.
+    Open one of those pages, click the extension, then <b>Copy diagnostics</b>, and paste it into an issue or to Claude so the reader can be fixed.</div>` : "";
+}
+function healthList() {
+  const rows = Object.entries(S.site_health || {}).flatMap(([src, checks]) => Object.entries(checks).map(([what, e]) =>
+    `<li><b>${esc(S.sources[src] || src)} ${esc(SITE_CHECK[what] || what)}</b>: ${e.ok ? "read fine" : `<span class="warn-text">not readable</span> on ${esc(e.path || "?")}`} <span class="note">(${esc((e.at || "").slice(0, 16).replace("T", " "))})</span></li>`));
+  return rows.length ? `<ul class="clean">${rows.join("")}</ul>` : `<p class="note">Nothing reported yet. Browse a job site with the extension on.</p>`;
+}
 async function showJobs() {
   const sources = Object.entries(S.sources).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   view.innerHTML = `
     <h1>Jobs</h1>
     <p class="lede">Every posting the extension has read, best fit first. ✦ marks Claude's assessment of the full posting against your résumé. The rest are quick matches to your preferences, which don't judge your chances.</p>
+    ${healthWarning()}
     ${profileEmpty() ? `<div class="card"><b>Start with your Profile.</b> Add the roles you want, your skills and your résumé so the scores mean something. <a href="#profile">Fill it in</a></div>` : ""}
     <div class="toolbar">
       <input type="search" id="q" placeholder="Search title, company, location" value="${esc(filters.text)}">
       <select id="source"><option value="">All sites</option>${sources}</select>
       <select id="verdict"><option value="">Any verdict</option><option>Apply</option><option>Consider</option><option>Skip</option></select>
-      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option></select>
+      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option><option value="years">Fewest years asked</option></select>
       <a class="btn small" href="/api/jobs.csv">Export CSV</a>
     </div>
+    <div class="toolbar">
+      <select id="remote" title="Work arrangement"><option value="">Any arrangement</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option></select>
+      <input type="number" id="min_pay" min="0" step="5000" placeholder="Min pay listed, e.g. 70000" value="${esc(filters.min_pay)}" title="Only jobs whose listed pay reaches this (yearly; hourly counts at 2,080 hours). Jobs with no pay listed are hidden.">
+      <select id="max_years" title="Years of experience the posting asks for"><option value="">Any experience</option><option value="0">No years asked</option><option value="1">Up to 1 year</option><option value="2">Up to 2 years</option><option value="3">Up to 3 years</option><option value="5">Up to 5 years</option><option value="8">Up to 8 years</option></select>
+      <select id="degree" title="Degree the posting requires"><option value="">Any degree</option><option value="high_school">No degree required</option><option value="associate">Associate's at most</option><option value="bachelor">Bachelor's at most</option><option value="master">Master's at most</option></select>
+      <select id="clearance" title="Security clearance"><option value="">Any clearance</option><option value="none">No clearance</option><option value="obtainable">None, or can get one after hire</option></select>
+    </div>
+    <p class="note">Filters use what each posting says. A posting that doesn't mention years, a degree or a clearance isn't ruled out by those filters. "No degree required" includes postings that accept experience instead.</p>
     <div id="list" class="jobs"></div>`;
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).value = filters[k];
+  for (const k of FILTER_SELECTS) $("#" + k).value = filters[k];
   const load = async () => {
-    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
+    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== ""));
     const out = await api("/api/jobs?" + q);
     const list = $("#list");
-    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : `<div class="empty card">
+    const filtered = FILTER_SELECTS.concat(["text", "min_pay"]).some((k) => k !== "sort" && filters[k] !== "");
+    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : filtered ? `<div class="empty card"><p><b>No jobs match these filters.</b></p></div>` : `<div class="empty card">
       <p><b>No jobs yet.</b></p><p>Install the Chrome extension (see <a href="#setup">Setup</a>), then browse LinkedIn, Indeed or NCWorks as usual. Jobs appear here as you scroll.</p></div>`;
     bindRows(list);
   };
   let t;
   $("#q").addEventListener("input", (e) => { filters.text = e.target.value; clearTimeout(t); t = setTimeout(load, 250); });
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
+  $("#min_pay").addEventListener("input", (e) => { filters.min_pay = e.target.value; clearTimeout(t); t = setTimeout(load, 400); });
+  for (const k of FILTER_SELECTS) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
   await load();
 }
 
 /* ---------- one job ---------- */
+function companyHtml(name, c) {
+  const head = `<h2>About ${esc(name)}</h2>`;
+  const btn = `<button class="btn small" id="company-read">${c ? "Read again" : "What does Claude know about them?"}</button>`;
+  if (!c) return head + `<p class="note">Claude reads each employer once (a quick, cheap call) when it first reads one of their postings, and reuses it for the rest.</p>` + btn;
+  const when = `<p class="note">From Claude's general knowledge as of ${esc((c.at || "").slice(0, 10))}. It can't browse, so it may be out of date: check anything that matters.</p>`;
+  const check = c.check && c.check.length ? `<h3>Look up before you apply</h3>${list(c.check)}` : "";
+  if (!c.known) return head + `<p>Claude doesn't recognise this employer well enough to say anything reliable, so it hasn't guessed.</p>` + check + when + btn;
+  return head + `<p>${esc(c.summary)}</p><div>${c.industry ? `<span class="tag">${esc(c.industry)}</span>` : ""}${c.size ? `<span class="tag">${esc(c.size)}</span>` : ""}</div>`
+    + (c.notes && c.notes.length ? `<h3>Worth knowing</h3>${list(c.notes)}` : "") + check + when + btn;
+}
+function bindCompany(key, name) {
+  const b = $("#company-read");
+  if (!b) return;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    b.innerHTML = `<span class="spinner"></span>Asking Claude…`;
+    try {
+      const out = await api(`/api/jobs/${encodeURIComponent(key)}/company`, {});
+      $("#company-card").innerHTML = companyHtml(name, out.company);
+    } catch (err) { toast(err.message); }
+    bindCompany(key, name);
+  });
+}
 const list = (items, fn = esc) => items && items.length ? `<ul class="clean">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="note">None.</p>`;
 async function showJob(key) {
-  const { job: j, ai_current, todo, pay } = await api("/api/jobs/" + encodeURIComponent(key));
+  const { job: j, ai_current, todo, pay, company } = await api("/api/jobs/" + encodeURIComponent(key));
   const b = j.best, r = j.rules || {}, ai = j.ai;
   const statusOpts = S.statuses.map((s) => `<option value="${s}" ${s === (j.status || "") ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("");
   view.innerHTML = `
@@ -119,7 +169,7 @@ async function showJob(key) {
       <div style="flex:1">
         <h1>${esc(j.title)}</h1>
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
-        <div>${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
+        <div>${factTags(j)}${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
         <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
           <button class="btn primary" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
           <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
@@ -134,6 +184,7 @@ async function showJob(key) {
     <div class="grid2">
       <div>
         <div class="card" id="ai-card">${ai ? aiHtml(ai) : `<h2>Claude's take</h2><p class="note">${S.ai.backend ? "Not asked yet. Click Ask Claude to get a fit score, your strengths and gaps for this role, red flags and résumé tips." : "Set up Claude on the Setup page to get a full analysis on your Claude subscription."}</p>`}</div>
+        ${j.company ? `<div class="card" id="company-card">${companyHtml(j.company, company)}</div>` : ""}
         <div class="card"><h2>Quick match: ${r.score} (${r.verdict})</h2><p class="note">How well the posting matches your stated preferences. It doesn't judge your chances; Claude's take does.</p><h3>Good</h3>${list(r.reasons)}<h3>Watch out</h3>${list(r.cautions)}${payHtml(pay)}</div>
       </div>
       <div>
@@ -184,6 +235,7 @@ async function showJob(key) {
     } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Easy apply"; }
   });
   bindPacket(view, key, j);
+  bindCompany(key, j.company);
   $("#analyze").addEventListener("click", async (e) => {
     const btn = e.target;
     btn.disabled = true;
@@ -557,13 +609,25 @@ function showProfile() {
 }
 
 /* ---------- setup ---------- */
+const MODELS = [["haiku", "Haiku (fast, light on your plan)"], ["sonnet", "Sonnet (balanced)"], ["opus", "Opus (most thorough)"]];
+const modelOpts = (v, dflt) => `<option value="">${esc(dflt)}</option>` + MODELS.map(([k, label]) => `<option value="${k}" ${v === k ? "selected" : ""}>${label}</option>`).join("");
 async function showSetup() {
   const [{ token }, usage] = await Promise.all([api("/api/token"), api("/api/ai/usage")]);
   const a = S.ai, s = S.settings;
   view.innerHTML = `<h1>Setup</h1>
     <div class="grid2">
       <div class="card"><h2>1. Claude, on your subscription</h2>
-        <p>Status: <b>${esc(a.label)}</b></p>
+        <p>Status: <b>${esc(a.label)}</b> <button class="btn small" id="test-ai" ${a.backend ? "" : "disabled"}>Test it</button></p>
+        <p id="test-out" class="note"></p>
+        ${a.limited ? `<p class="warn-text">${esc(a.limited)} Automatic reads are paused until then; Ask Claude still tries.</p>` : ""}
+        <details ${a.backend ? "" : "open"}><summary>How to sign Claude Code in</summary>
+        <ol class="steps">
+          <li>Open <b>PowerShell</b> (Windows: press the Windows key, type PowerShell, press Enter) or <b>Terminal</b> (Mac).</li>
+          <li>Type <code>claude</code> and press Enter. If it isn't found, install it first: <code>npm install -g @anthropic-ai/claude-code</code> (it needs Node.js 22 or newer; check with <code>node -v</code>, and update with <code>winget install OpenJS.NodeJS.LTS</code> or from nodejs.org).</li>
+          <li>If Windows says <i>running scripts is disabled</i>, run <code>Set-ExecutionPolicy -Scope CurrentUser RemoteSigned</code>, answer Y, and try <code>claude</code> again.</li>
+          <li>Choose <b>Claude account with subscription</b>, approve in the browser window that opens, then type <code>/exit</code>.</li>
+          <li>Restart Job Scanner (close its window and run start.bat again), then click <b>Test it</b>.</li>
+        </ol></details>
         ${a.backend === "cli" ? `<p class="note">Job Scanner runs Claude Code on this computer, so its analysis counts against your Claude Pro or Max plan's usage, not a separate bill.</p>` : `
         <ol class="steps">
           <li>Install Claude Code: <code>npm install -g @anthropic-ai/claude-code</code> (or the installer from claude.com/claude-code).</li>
@@ -577,6 +641,14 @@ async function showSetup() {
           <label class="f">Only if the quick score is at least <input type="number" id="minscore" min="0" max="100" value="${s.auto_min_score}"></label>
           <label class="f">At most this many calls a day <small>0 = no limit</small><input type="number" id="limit" min="0" max="1000" value="${s.ai_daily_limit}"></label>
         </div>
+        <h3>Which Claude model does what</h3>
+        <div class="grid2">
+          <label class="f">Reading postings, letters, résumés <select id="model_main">${modelOpts(s.model_main, "Claude Code's default")}</select></label>
+          <label class="f">Quick jobs (employer reads, title ideas) <select id="model_light">${modelOpts(s.model_light, "Same as above")}</select></label>
+        </div>
+        <label class="f">Automatic reads (when you open a posting) use <select id="model_auto"><option value="main" ${s.model_auto !== "light" ? "selected" : ""}>the main model</option><option value="light" ${s.model_auto === "light" ? "selected" : ""}>the quick-jobs model (uses less of your plan)</option></select></label>
+        <p class="note">Haiku is fastest and uses the least of your plan's limits; Opus is the most thorough. Scores are held to the same rubric either way.</p>
+        ${s.startup_supported ? `<label class="f"><input type="checkbox" id="startup" ${s.start_with_windows ? "checked" : ""}> Start Job Scanner (hidden) when I sign in to Windows</label>` : ""}
         <button class="btn" id="save-ai">Save</button>
         <p class="note">Used today: ${usage.today.calls} calls (${usage.today.tokens.toLocaleString()} tokens). This week: ${usage.week.calls} calls.</p>
       </div>
@@ -591,18 +663,30 @@ async function showSetup() {
         <button class="btn small" id="rotate">Make a new token</button>
       </div>
     </div>
+    <div class="card"><h2>Can the extension read each site?</h2>${healthList()}</div>
     <div class="card"><h2>Your data</h2>
       <p class="note">${S.counts.total} jobs, ${S.counts.analyzed} read by Claude. Everything is stored on this computer.</p>
       <div class="actions"><a class="btn" href="/api/jobs.csv">Export CSV</a><button class="btn" id="rescore">Rescore all jobs</button><button class="btn danger" id="clear">Clear jobs I'm not tracking</button></div>
     </div>`;
   $("#copy").addEventListener("click", async () => { await navigator.clipboard.writeText($("#token").value); toast("Copied."); });
+  $("#test-ai").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    $("#test-out").innerHTML = `<span class="spinner"></span>Asking Claude…`;
+    const r = await api("/api/ai/test", {}).catch((err) => ({ ok: false, error: err.message }));
+    $("#test-out").textContent = r.ok ? "Claude answered. It's working on your subscription." : r.error;
+    $("#test-out").className = "note" + (r.ok ? " ok" : " warn");
+    e.target.disabled = false;
+  });
   $("#rotate").addEventListener("click", async () => {
     if (!confirm("Make a new token? The extension will need the new one.")) return;
     $("#token").value = (await api("/api/token/rotate", {})).token;
   });
   $("#save-ai").addEventListener("click", async () => {
     try {
-      const out = await api("/api/settings", { auto_analyze: $("#auto").checked, auto_min_score: $("#minscore").value, ai_daily_limit: $("#limit").value });
+      const body = { auto_analyze: $("#auto").checked, auto_min_score: $("#minscore").value, ai_daily_limit: $("#limit").value,
+        model_main: $("#model_main").value, model_light: $("#model_light").value, model_auto: $("#model_auto").value };
+      if ($("#startup")) body.start_with_windows = $("#startup").checked;
+      const out = await api("/api/settings", body);
       S.settings = out.settings;
       toast("Saved.");
     } catch (err) { toast(err.message); }

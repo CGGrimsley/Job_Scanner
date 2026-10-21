@@ -279,13 +279,37 @@
     if (fresh.length) send({ type: "capture", jobs: fresh });
   }
 
+  // Is the site still being read? Sites change their pages; when cards or a posting stop yielding what we need,
+  // say so on the page and on the icon instead of failing quietly.
+  const health = { cardsFound: 0, cardsRead: 0, itemMissSince: 0, warned: "", okSent: {} };
+  function reportOk(what) {  // once per page: lets the app clear an old "can't read" warning
+    if (site === GENERIC || health.okSent[what]) return;
+    health.okSent[what] = true;
+    send({ type: "site-health", ok: true, what, source: site.source, path: location.pathname });
+  }
+  const started = Date.now();
+  function checkHealth() {
+    if (site === GENERIC || health.warned) return;
+    const now = Date.now();
+    let problem = "", what = "";
+    if (health.itemMissSince && now - health.itemMissSince > 8000) { problem = "Can't read this posting"; what = "posting"; }
+    else if (health.cardsFound >= 3 && health.cardsRead === 0 && now - started > 8000) { problem = "Can't read the job cards"; what = "cards"; }
+    if (!problem) return;
+    health.warned = problem;
+    panel.status("bad", `${problem}: this site may have changed. Click the icon, then Copy diagnostics`);
+    send({ type: "site-health", ok: false, problem, what, source: site.source, path: location.pathname });
+  }
+
   function scanCards() {
     const rows = [];
     for (const c of site.cards()) {
       if (!visible(c.el)) continue;
+      health.cardsFound++;
       let row = null;
       try { row = site.card(c.el, c); } catch (_) { row = null; }
       if (!row || !row.title) continue;
+      health.cardsRead++;
+      reportOk("cards");
       rows.push({ source: site.source, id: c.id, kind: "card", url: c.url, ...row });
     }
     if (rows.length) post(rows);
@@ -298,6 +322,7 @@
     if (!cur) { if (currentId) { currentId = null; panel.job(null); } return; }
     let row = null;
     try { row = site.item(cur.root); } catch (_) { row = null; }
+    if (!row || !row.title) { health.itemMissSince = health.itemMissSince || Date.now(); } else { health.itemMissSince = 0; reportOk("posting"); }
     if (!row || (!row.description && !force)) return;
     for (const k of Object.keys(row)) if (row[k] === undefined || row[k] === "") delete row[k];
     const changed = currentId !== cur.id;
@@ -309,7 +334,7 @@
   let timer = null;
   function schedule() {
     clearTimeout(timer);
-    timer = setTimeout(() => { if (enabled) { scanCards(); scanItem(); } }, 700);
+    timer = setTimeout(() => { if (enabled) { scanCards(); scanItem(); checkHealth(); } }, 700);
   }
 
   /* ---------- stamps on the cards ---------- */
@@ -512,7 +537,8 @@
       try { item = cur && site.item(cur.root); } catch (e) { item = { error: String(e) }; }
       if (item && item.description) item.description = item.description.slice(0, 300) + "…";
       reply({ extension: chrome.runtime.getManifest().version, site: site.source, path: location.pathname, cards_found: site.cards().length,
-        cards, current: cur && { id: cur.id, url: cur.url }, item, json_ld: !!jsonLdJob() });
+        cards, current: cur && { id: cur.id, url: cur.url }, item, json_ld: !!jsonLdJob(),
+        health: { cards_found: health.cardsFound, cards_read: health.cardsRead, posting_unread: !!health.itemMissSince, warning: health.warned } });
     }
   });
 
@@ -521,7 +547,7 @@
     panel.setVisible(s.indicator);
     if (site === GENERIC) { panel.status(null, "scanning this page"); scanItem(true); return; }
     panel.status(null, enabled ? "watching" : "paused");
-    if (enabled) schedule();
+    if (enabled) { schedule(); setTimeout(() => { if (enabled) { scanCards(); scanItem(); checkHealth(); } }, 9000); }
   });
   chrome.storage.onChanged.addListener((ch) => {
     if (ch.enabled) { enabled = ch.enabled.newValue; panel.status(null, enabled ? "watching" : "paused"); if (enabled) schedule(); }

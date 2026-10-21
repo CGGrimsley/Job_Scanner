@@ -1,11 +1,11 @@
-"""Command line: `python -m job_scanner serve | token | reset | doctor`."""
+"""Command line: `python -m job_scanner serve | token | reset | doctor | startup`."""
 
 from __future__ import annotations
 
 import argparse
 import os
 
-from . import __version__, ai, jobs, store, web
+from . import __version__, ai, jobs, startup, store, web
 
 
 def _load_env(path: str = ".env") -> None:
@@ -39,6 +39,8 @@ def main(argv=None) -> int:
     r.add_argument("--all", action="store_true", help="also clear jobs you're tracking")
     r.add_argument("-y", action="store_true", help="don't ask")
     sub.add_parser("doctor", help="check Claude and the data folder")
+    st = sub.add_parser("startup", help="start the app when you sign in to Windows")
+    st.add_argument("state", choices=("on", "off", "status"), nargs="?", default="status")
     args = ap.parse_args(argv)
 
     if args.cmd in (None, "serve"):
@@ -53,6 +55,14 @@ def main(argv=None) -> int:
             return 1
         print(f"Removed {jobs.Ledger().clear(keep_tracked=not args.all)} jobs.")
         return 0
+    if args.cmd == "startup":
+        if not startup.supported():
+            print("Start with Windows only works on Windows.")
+            return 1
+        if args.state != "status":
+            startup.set(args.state == "on")
+        print(f"Start with Windows: {'on' if startup.enabled() else 'off'}")
+        return 0
     if args.cmd == "doctor":
         b = ai.describe_backend()
         print(f"Data folder: {store.data_dir()}")
@@ -60,8 +70,7 @@ def main(argv=None) -> int:
         print(f"Claude: {b['label']}")
         if b["backend"]:
             try:
-                ai.ask_json("Answer briefly.", "Reply with ok=true.", {"type": "object", "properties": {"ok": {"type": "boolean"}},
-                            "required": ["ok"], "additionalProperties": False}, kind="doctor")
+                ai.test_call()
                 print("Test call: OK")
             except ai.AIError as e:
                 print(f"Test call failed: {e}")

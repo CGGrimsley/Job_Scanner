@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, advice, ai, docx, insights, jobs, pdf, places, profile, resume, signals, store
+from . import __version__, advice, ai, docx, insights, jobs, pdf, places, profile, resume, signals, startup, store, companies, health
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -24,7 +24,9 @@ MAX_BODY = 2_000_000
 MAX_UPLOAD = 12_000_000
 DEFAULT_PORT = 8766
 
-SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60}
+SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60,
+                     "model_main": "", "model_light": "haiku", "model_auto": "main"}
+MODEL_CHOICES = ("", "haiku", "sonnet", "opus")
 
 
 class BadRequest(ValueError):
@@ -33,7 +35,10 @@ class BadRequest(ValueError):
 
 def app_settings() -> dict:
     s = store.settings()
-    return {k: s.get(k, v) for k, v in SETTINGS_DEFAULTS.items()}
+    out = {k: s.get(k, v) for k, v in SETTINGS_DEFAULTS.items()}
+    out["startup_supported"] = startup.supported()
+    out["start_with_windows"] = startup.enabled()
+    return out
 
 
 def host_allowed(host: str) -> bool:
@@ -106,6 +111,7 @@ def make_handler(ledger: jobs.Ledger):
     state = {"profile": profile.load()}
     analyzing: dict = {}
     analyzing_lock = threading.Lock()
+    cancelled: set = set()  # automatic reads for tabs that were closed before Claude got to them
 
     def current_profile() -> dict:
         return state["profile"]
@@ -127,6 +133,8 @@ def make_handler(ledger: jobs.Ledger):
                         "mark": ledger.mark(rec)}
             if ai.over_limit():
                 return {"skipped": "Today's Claude limit is used up (change it in Setup).", "mark": ledger.mark(rec)}
+            if ai.limited():
+                return {"skipped": ai.limited(), "mark": ledger.mark(rec)}
             if not rec.get("description"):
                 return {"skipped": "Open the posting so its full description is captured first.", "mark": ledger.mark(rec)}
         if profile.is_empty(p):
@@ -138,9 +146,30 @@ def make_handler(ledger: jobs.Ledger):
             if not force and jobs.ai_current(rec, fp):  # someone else just did it
                 return {"job": ledger.public(rec), "mark": ledger.mark(rec), "cached": True}
             warn = signals.warnings(rec, ledger.siblings(rec))
-            out = ai.analyze_job(rec, profile.for_prompt(p), "\n".join("- " + w["text"] for w in warn))
+            cancelled.discard(key)
+            stop = (lambda: key in cancelled) if auto else None
+            employer = company(rec, priority=1 if auto else 0, cancelled=stop, auto=auto)
+            context = "\n".join(["- " + w["text"] for w in warn] + [companies.context(employer)]).strip()
+            out = ai.analyze_job(rec, profile.for_prompt(p), context,
+                                 priority=1 if auto else 0, cancelled=stop, auto=auto)
             rec = ledger.set_analysis(key, out, fp)
         return {"job": ledger.public(rec), "mark": ledger.mark(rec)}
+
+    def company(rec: dict, refresh: bool = False, **kw) -> dict | None:
+        """The employer read, from companies.json, or one light Claude call the first time. A failed read never
+        stops the job's own analysis."""
+        name = rec.get("company") or ""
+        if not companies.key(name):
+            return None
+        read = companies.get(name)
+        if read and (companies.fresh(read) and not refresh):
+            return read
+        try:
+            return companies.put(name, ai.company_read(rec, **kw))
+        except ai.AIError as e:
+            if e.kind in ("skipped", "limit") or refresh:
+                raise
+            return read
 
     def write_letter(key: str, data: dict) -> dict:
         rec = ledger.get(key)
@@ -346,7 +375,10 @@ def make_handler(ledger: jobs.Ledger):
             except resume.ResumeError as e:
                 self._error(str(e))
             except ai.AIError as e:
-                self._error(str(e), HTTPStatus.BAD_GATEWAY)
+                if e.kind == "skipped":
+                    return self._json({"skipped": str(e)})
+                self._json({"error": str(e), "kind": e.kind, "retry_after": e.retry_after},
+                           HTTPStatus.TOO_MANY_REQUESTS if e.kind == "limit" else HTTPStatus.BAD_GATEWAY)
             except Exception as e:  # a bug shouldn't drop the connection without a word
                 import traceback
 
@@ -383,6 +415,7 @@ def make_handler(ledger: jobs.Ledger):
             if path == "/api/state":
                 return self._json({"version": __version__, "profile": current_profile(), "ai": ai.describe_backend(),
                                    "settings": app_settings(), "counts": ledger.counts(), "sources": jobs.SOURCES,
+                                   "site_health": health.load(),
                                    "statuses": jobs.STATUSES, "extension_version": extension_version(),
                                    "choices": {"remote": profile.REMOTE_CHOICES, "seniority": profile.SENIORITY_CHOICES,
                                                "job_types": profile.JOB_TYPE_CHOICES}})
@@ -415,7 +448,7 @@ def make_handler(ledger: jobs.Ledger):
                 rec = ledger.get(path[len("/api/jobs/"):])
                 if rec is None:
                     raise KeyError(path)
-                return self._json({"job": ledger.public(rec), "todo": advice.nudges(rec),
+                return self._json({"job": ledger.public(rec), "todo": advice.nudges(rec), "company": companies.get(rec.get("company") or ""),
                                    "pay": insights.pay_position(rec, list(ledger.jobs.values())),
                                    "ai_current": jobs.ai_current(rec, profile.fingerprint(current_profile()))})
             if path == "/api/places":
@@ -447,6 +480,17 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/cover-letter":
                     rec = write_letter(f"{data.get('source', '')}:{data.get('id', '')}", data)
                     return self._json({"letter": rec["cover_letter"]["text"]})
+                if path == "/api/capture/health":
+                    try:
+                        return self._json({"health": health.report(data)})
+                    except ValueError as e:
+                        raise BadRequest(str(e)) from None
+                if path == "/api/capture/cancel":  # tabs closed: drop their automatic reads that haven't started
+                    keys = [str(k)[:200] for k in (data.get("keys") or [])[:200]]
+                    cancelled.update(keys)
+                    if len(cancelled) > 2000:
+                        cancelled.clear()
+                    return self._json({"ok": True, "queued": ai.gate.queued()})
                 if path == "/api/capture/easy-apply":
                     return self._json(easy_apply(f"{data.get('source', '')}:{data.get('id', '')}", data))
                 if path == "/api/capture/autofill":
@@ -490,10 +534,28 @@ def make_handler(ledger: jobs.Ledger):
                             changes[k] = max(lo, min(hi, int(data[k])))
                         except (TypeError, ValueError):
                             raise BadRequest(f"{k} must be a number.") from None
+                for k in ("model_main", "model_light"):
+                    if k in data:
+                        if data[k] not in MODEL_CHOICES:
+                            raise BadRequest(f"{k} must be one of: haiku, sonnet, opus (or empty for the default).")
+                        changes[k] = data[k]
+                if "model_auto" in data:
+                    changes["model_auto"] = "light" if data["model_auto"] == "light" else "main"
+                if "start_with_windows" in data and startup.supported():
+                    try:
+                        startup.set(bool(data["start_with_windows"]))
+                    except OSError as e:
+                        raise BadRequest(f"Couldn't change Start with Windows: {e}") from None
                 store.save_settings(changes)
                 return self._json({"settings": app_settings(), "ai": ai.describe_backend()})
             if path == "/api/token/rotate":
                 return self._json({"token": store.pairing_token(rotate=True)})
+            if path == "/api/ai/test":
+                try:
+                    ai.test_call()
+                    return self._json({"ok": True, "ai": ai.describe_backend()})
+                except ai.AIError as e:
+                    return self._json({"ok": False, "error": str(e), "kind": e.kind})
             if path == "/api/insights/plan":
                 p = current_profile()
                 gaps = insights.skill_gaps(list(ledger.jobs.values()), p)
@@ -513,6 +575,13 @@ def make_handler(ledger: jobs.Ledger):
                 key, _, action = rest.rpartition("/")
                 if action == "analyze":
                     return self._json(analyze(key, force=bool(data.get("force"))))
+                if action == "company":
+                    rec = ledger.get(key)
+                    if rec is None:
+                        raise KeyError(key)
+                    if not companies.key(rec.get("company") or ""):
+                        raise BadRequest("This posting doesn't name its employer.")
+                    return self._json({"company": company(rec, refresh=True)})
                 if action == "cover-letter":
                     return self._json({"job": ledger.public(write_letter(key, data))})
                 if action == "tailor":
