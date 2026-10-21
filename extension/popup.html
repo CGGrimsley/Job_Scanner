@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="ui.css"></head>
+<body class="popup">
+  <header><img src="icons/icon48.png" alt=""><div><h1>Job Scanner</h1><p class="k">Fit scores on the jobs you browse</p></div></header>
+  <p id="status" class="status">Checking…</p>
+  <dl>
+    <dt>Sent this session</dt><dd id="sent">0</dd>
+    <dt>Strong matches</dt><dd id="alerts">0</dd>
+    <dt>Jobs in the app</dt><dd id="jobs">—</dd>
+  </dl>
+  <label class="switch"><input type="checkbox" id="enabled"> Read jobs while I browse</label>
+  <div class="row"><button id="scan" class="btn primary" type="button">Scan this page</button><a id="open" class="btn" target="_blank">Open Job Scanner</a></div>
+  <p id="scanmsg" class="fine" hidden></p>
+  <div class="row"><a href="options.html" target="_blank" class="link">Settings</a> · <button id="diag" class="link" type="button">Copy diagnostics for this page</button></div>
+  <p id="diagmsg" class="fine" hidden></p>
+  <p class="fine">Reads only the pages you open, as you scroll. It never clicks, applies or fetches anything by itself. On a career site it doesn't know, select the job description and click Scan this page.</p>
+  <script src="popup.js"></script>
+</body></html>

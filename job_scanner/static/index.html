@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job Scanner</title>
+  <link rel="icon" href="/favicon.png">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#jobs"><img src="/favicon.png" alt=""><span>Job Scanner</span></a>
+    <nav>
+      <a href="#jobs" data-view="jobs">Jobs</a>
+      <a href="#tracker" data-view="tracker">Tracker</a>
+      <a href="#profile" data-view="profile">Profile</a>
+      <a href="#setup" data-view="setup">Setup</a>
+    </nav>
+    <span id="ai-pill" class="pill"></span>
+  </header>
+  <main id="view"></main>
+  <div id="toast" role="status" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

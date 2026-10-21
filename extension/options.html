@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Job Scanner settings</title><link rel="stylesheet" href="ui.css"></head>
+<body class="options">
+  <header><img src="icons/icon48.png" alt=""><div><h1>Job Scanner</h1><p class="k">Extension settings</p></div></header>
+  <form id="f">
+    <label>App address <small>http://127.0.0.1:8766 when Job Scanner runs on this computer</small><input name="server" placeholder="http://127.0.0.1:8766"></label>
+    <label>Pairing token <small>Copy it from Setup in the Job Scanner app</small><input name="token" autocomplete="off"></label>
+    <label class="switch"><input type="checkbox" name="notify"> Desktop alert when I scroll past a job scoring 80 or more</label>
+    <label class="switch"><input type="checkbox" name="indicator"> Show the Job Scanner panel in the corner of job sites</label>
+    <label class="switch"><input type="checkbox" name="dimSkip"> Fade out jobs that score Skip</label>
+    <div class="row"><button class="btn primary" type="submit">Save &amp; test</button><span id="msg" class="status"></span></div>
+  </form>
+  <script src="options.js"></script>
+</body></html>
