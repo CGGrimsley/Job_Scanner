@@ -11,6 +11,13 @@
   <label class="switch"><input type="checkbox" id="enabled"> Read jobs while I browse</label>
   <div class="row"><button id="scan" class="btn primary" type="button">Scan this page</button><a id="open" class="btn" target="_blank">Open Job Scanner</a></div>
   <p id="scanmsg" class="fine" hidden></p>
+  <div class="apply">
+    <b>Applying?</b> On the application form:
+    <div class="row"><button id="fill" class="btn primary" type="button">Fill this application</button><button id="answer" class="btn" type="button" hidden>Draft answers with Claude</button></div>
+    <button id="allow" class="btn" type="button" hidden></button>
+    <p id="fillmsg" class="fine" hidden></p>
+    <p class="fine">Fills your details from your Profile and attaches your tailored résumé and cover letter where the form asks. It never submits, and it leaves gender, race, veteran and disability questions to you.</p>
+  </div>
   <div class="row"><a href="options.html" target="_blank" class="link">Settings</a> · <button id="diag" class="link" type="button">Copy diagnostics for this page</button></div>
   <p id="diagmsg" class="fine" hidden></p>
   <p class="fine">Reads only the pages you open, as you scroll. It never clicks, applies or fetches anything by itself. On a career site it doesn't know, select the job description and click Scan this page.</p>

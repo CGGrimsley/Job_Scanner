@@ -5,10 +5,15 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 - **Fit stamps on every card** as you scroll a search: *Apply 78*, *Consider 55*, *Skip 24*.
 - **A panel in the corner** for the posting you have open, with Claude's assessment, realistic odds, strengths, gaps, red flags and résumé tips, plus buttons to save it or mark it applied.
 - **Cover letters** for any job, from the panel or the app. Choose which résumé to base one on (Claude picks the best match by default) and a tone, then copy or download it.
+- **Easy apply.** One click (in the app or the panel) gets Claude's assessment, a tailored résumé, a cover letter and answers to the questions the application will likely ask, all from the same résumé, and saves the job to your tracker. Anything your résumés don't show is left blank for you, not guessed.
+- **Fill this application.** On an application form, click the extension's icon, then **Fill this application**. It fills your details from the Profile's *Application details*, attaches your tailored résumé and cover letter where the form asks for files, and offers to have Claude draft answers to the form's own questions. It never submits and never overwrites what you've typed, and it always leaves questions about gender, race, veterans, disability and the like to you.
+- **Tailored résumés.** For any job, Claude reorders and rewords one of your résumés in the posting's terms, using only what your résumés already show. It lists what it changed and what it left out, and flags any number that isn't in your résumés.
+- **PDF and Word downloads** for tailored résumés and cover letters.
+- **Tracker to-dos.** From the dates you record, the tracker tells you when to apply, reach out to someone at the company, follow up (after a week, again after two), prepare for an interview, send a thank-you, and answer an offer. Claude drafts each message for you to edit.
 - **Several résumés.** Claude reads them all as evidence of what you've done, and it tells you which one to send for each job.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
-It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. LinkedIn and Indeed forbid automated scraping in their terms, so it works the way you browse and nothing more.
+It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so it works the way you browse and nothing more.
 
 ## Honest by design
 
@@ -94,5 +99,7 @@ The code is laid out as follows:
 - `ai.py`: Claude, its prompts and the honesty rubric.
 - `profile.py`: the profile.
 - `resume.py`: résumé import.
+- `advice.py`: the tracker's to-dos.
+- `pdf.py`, `docx.py`: PDF and Word export.
 - `static/`: the web app.
 - `extension/`: the Chrome extension. `capture.js` holds the per-site readers.

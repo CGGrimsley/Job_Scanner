@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, ai, jobs, places, profile, resume, store
+from . import __version__, advice, ai, docx, jobs, pdf, places, profile, resume, store
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -52,6 +52,46 @@ def host_allowed(host: str) -> bool:
         pass
     allowed = {h.strip().lower() for h in os.environ.get("JOB_SCANNER_ALLOWED_HOSTS", "").split(",") if h.strip()}
     return name in allowed
+
+
+def unsupported_numbers(text: str, source: str) -> list:
+    """Lines of a tailored résumé with a number, percentage or dollar figure that none of the person's own résumés
+    contain: the one thing worth double-checking by hand, since a made-up metric is the easiest lie to slip in."""
+    import re
+
+    def nums(t):
+        return {n.replace(",", "").rstrip(".") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", t)}
+
+    known = nums(source)
+    out = []
+    for line in text.splitlines():
+        if nums(line) - known:
+            out.append(line.strip().lstrip("-* ").strip())
+    return out[:10]
+
+
+def export_name(rec: dict, what: str, ext: str) -> str:
+    import re
+
+    base = f"{what} - {rec.get('company') or 'job'} - {rec.get('title') or ''}"
+    return re.sub(r'[\\/:*?"<>|\r\n]+', "", base).strip(" -")[:110] + "." + ext
+
+
+def export_doc(rec: dict, what: str, fmt: str) -> tuple:
+    """A cover letter or tailored résumé as a file: (bytes, content type, file name)."""
+    doc = rec.get({"letter": "cover_letter", "resume": "tailored"}.get(what, ""))
+    if not doc or not doc.get("text"):
+        raise BadRequest("Write it first.")
+    label = "Cover letter" if what == "letter" else "Resume"
+    if fmt == "pdf":
+        body, ctype = pdf.from_text(doc["text"], letter=what == "letter"), "application/pdf"
+    elif fmt == "docx":
+        body, ctype = docx.from_text(doc["text"]), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif fmt == "txt":
+        body, ctype = doc["text"].encode("utf-8"), "text/plain; charset=utf-8"
+    else:
+        raise BadRequest("Format must be pdf, docx or txt.")
+    return body, ctype, export_name(rec, label, fmt)
 
 
 def extension_version() -> str:
@@ -113,6 +153,97 @@ def make_handler(ledger: jobs.Ledger):
         letter = ai.cover_letter(rec, profile.for_prompt(p), str(data.get("notes") or ""), name, str(data.get("tone") or "standard"))
         return ledger.set_letter(key, letter, name)
 
+    def tailor(key: str, data: dict) -> dict:
+        rec = ledger.get(key)
+        if rec is None:
+            raise KeyError(key)
+        p = current_profile()
+        if not p["resumes"]:
+            raise BadRequest("Add a résumé on your Profile first: the tailored one is built from it.")
+        name = str(data.get("resume") or "")
+        if name and name not in {r["name"] for r in p["resumes"]}:
+            raise BadRequest("No résumé by that name.")
+        out = ai.tailor_resume(rec, profile.for_prompt(p), name)
+        text = str(out.get("resume") or "").strip()
+        doc = {"text": text, "resume": name, "changes": out.get("changes") or [], "left_out": out.get("left_out") or [],
+               "check": unsupported_numbers(text, profile.all_resume_text(p) + "\n" + p["about_me"])}
+        return ledger.set_doc(key, "tailored", doc)
+
+    def answers(key: str, questions: list | None = None) -> list:
+        rec = ledger.get(key)
+        if rec is None:
+            raise KeyError(key)
+        p = current_profile()
+        if not p["resumes"] and not p["about_me"]:
+            raise BadRequest("Add a résumé on your Profile first: answers are written from it.")
+        return ai.answer_questions(rec, profile.for_prompt(p), profile.apply_facts(p), questions)
+
+    def easy_apply(key: str, data: dict) -> dict:
+        """Everything for one application in one go: Claude's assessment, a tailored résumé, a cover letter and
+        answers to the questions the form will likely ask, all from the same résumé. Saves the job to the tracker."""
+        rec = ledger.get(key)
+        if rec is None:
+            raise KeyError(key)
+        p = current_profile()
+        if not p["resumes"]:
+            raise BadRequest("Add a résumé on your Profile first: the application is built from it.")
+        names = {r["name"] for r in p["resumes"]}
+        fp = profile.fingerprint(p)
+        name = str(data.get("resume") or "")
+        if name and name not in names:
+            raise BadRequest("No résumé by that name.")
+        errors = {}
+        if not name and len(names) > 1 and not jobs.ai_current(rec, fp):
+            try:  # the assessment picks the résumé, so the letter and the résumé agree
+                analyze(key)
+            except ai.AIError as e:
+                errors["analysis"] = str(e)
+        best = ((ledger.get(key).get("ai") or {}).get("best_resume") or "") if not name else name
+        name = best if best in names else (next(iter(names)) if len(names) == 1 else "")
+        parts = {"tailored": lambda: tailor(key, {"resume": name}),
+                 "letter": lambda: write_letter(key, {"resume": name, "notes": data.get("notes") or ""}),
+                 "answers": lambda: ledger.set_doc(key, "answers", {"items": answers(key)})}
+        if not jobs.ai_current(ledger.get(key), fp) and "analysis" not in errors:
+            parts["analysis"] = lambda: analyze(key)
+
+        def run(part, fn):
+            try:
+                fn()
+            except (ai.AIError, BadRequest) as e:
+                errors[part] = str(e)
+
+        threads = [threading.Thread(target=run, args=item) for item in parts.items()]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if all(k in errors for k in ("tailored", "letter", "answers")):
+            raise ai.AIError(errors["tailored"])
+        rec = ledger.get(key)
+        if rec.get("status") in ("", "dismissed"):
+            ledger.update(key, {"status": "saved"})
+        rec = ledger.set_doc(key, "packet", {"resume": name})
+        return {"job": jobs.public(rec), "mark": jobs.mark_for(rec), "errors": errors}
+
+    def autofill(url: str) -> dict:
+        """What the extension fills an application form with: the person's details, plus the job's letter and
+        answers when the form belongs to a job it knows."""
+        p = current_profile()
+        a = dict(p.get("apply") or {})
+        if p["name"] and not (a.get("first_name") or a.get("last_name")):
+            first, _, last = p["name"].partition(" ")
+            a.setdefault("first_name", first)
+            if last:
+                a.setdefault("last_name", last)
+        rec = ledger.for_page(url)
+        out = {"fields": a, "job": None}
+        if rec:
+            out["job"] = {"key": rec["key"], "title": rec.get("title") or "", "company": rec.get("company") or ""}
+            out["letter"] = (rec.get("cover_letter") or {}).get("text") or ""
+            out["answers"] = [x for x in (rec.get("answers") or {}).get("items") or [] if x.get("answer")]
+            out["has_resume"] = bool((rec.get("tailored") or {}).get("text"))
+        return out
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"JobScanner/{__version__}"
 
@@ -158,6 +289,11 @@ def make_handler(ledger: jobs.Ledger):
         def _json(self, payload, status=HTTPStatus.OK):
             self._send(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"),
                        "application/json; charset=utf-8", status)
+
+        def _file(self, body: bytes, ctype: str, name: str):
+            from urllib.parse import quote
+
+            self._send(body, ctype, extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
         def _error(self, msg, status=HTTPStatus.BAD_REQUEST):
             self._json({"error": msg}, status)
@@ -229,6 +365,11 @@ def make_handler(ledger: jobs.Ledger):
                     if rec is None:
                         return self._error("Not captured yet.", HTTPStatus.NOT_FOUND)
                     return self._json({"job": jobs.public(rec), "mark": jobs.mark_for(rec)})
+                if path == "/api/capture/export":  # a file for the extension to attach to an application form
+                    rec = ledger.get(q.get("key", ""))
+                    if rec is None:
+                        raise KeyError(q.get("key"))
+                    return self._file(*export_doc(rec, q.get("doc", "resume"), q.get("format", "pdf")))
                 return self._error("Not found", HTTPStatus.NOT_FOUND)
             if path.startswith("/api/") and not self._same_origin():
                 return self._error("Forbidden", HTTPStatus.FORBIDDEN)
@@ -247,11 +388,20 @@ def make_handler(ledger: jobs.Ledger):
             if path == "/api/jobs.csv":
                 return self._send(ledger.csv().encode("utf-8"), "text/csv; charset=utf-8",
                                   extra={"Content-Disposition": 'attachment; filename="jobs.csv"'})
+            if path == "/api/todo":
+                tracked = ledger.listing({"status": "tracked"})
+                return self._json({"todo": advice.todo(tracked)})
+            if path.startswith("/api/jobs/") and path.endswith("/export"):
+                key = path[len("/api/jobs/"):-len("/export")]
+                rec = ledger.get(key)
+                if rec is None:
+                    raise KeyError(key)
+                return self._file(*export_doc(rec, q.get("doc", "letter"), q.get("format", "pdf")))
             if path.startswith("/api/jobs/"):
                 rec = ledger.get(path[len("/api/jobs/"):])
                 if rec is None:
                     raise KeyError(path)
-                return self._json({"job": jobs.public(rec),
+                return self._json({"job": jobs.public(rec), "todo": advice.nudges(rec),
                                    "ai_current": jobs.ai_current(rec, profile.fingerprint(current_profile()))})
             if path == "/api/places":
                 return self._json({"places": places.search(q.get("q", ""))})
@@ -282,6 +432,15 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/cover-letter":
                     rec = write_letter(f"{data.get('source', '')}:{data.get('id', '')}", data)
                     return self._json({"letter": rec["cover_letter"]["text"]})
+                if path == "/api/capture/easy-apply":
+                    return self._json(easy_apply(f"{data.get('source', '')}:{data.get('id', '')}", data))
+                if path == "/api/capture/autofill":
+                    return self._json(autofill(str(data.get("url") or "")))
+                if path == "/api/capture/answers":
+                    qs = data.get("questions")
+                    if not isinstance(qs, list) or not qs:
+                        raise BadRequest("No questions.")
+                    return self._json({"answers": answers(str(data.get("key") or ""), qs)})
                 if path == "/api/capture/status":
                     key = f"{data.get('source', '')}:{data.get('id', '')}"
                     rec = ledger.update(key, {"status": data.get("status", "")})
@@ -331,6 +490,21 @@ def make_handler(ledger: jobs.Ledger):
                     return self._json(analyze(key, force=bool(data.get("force"))))
                 if action == "cover-letter":
                     return self._json({"job": jobs.public(write_letter(key, data))})
+                if action == "tailor":
+                    return self._json({"job": jobs.public(tailor(key, data))})
+                if action == "easy-apply":
+                    return self._json(easy_apply(key, data))
+                if action == "answers":
+                    return self._json({"job": jobs.public(ledger.set_doc(key, "answers", {"items": answers(key)}))})
+                if action == "message":
+                    rec = ledger.get(key)
+                    if rec is None:
+                        raise KeyError(key)
+                    kind = str(data.get("kind") or "")
+                    if kind not in ai.MESSAGE_KINDS:
+                        raise BadRequest("Unknown kind of message.")
+                    msg = ai.draft_message(rec, profile.for_prompt(current_profile()), kind, rec.get("notes") or "")
+                    return self._json({"job": jobs.public(ledger.set_doc(key, f"draft_{kind}", msg)), "message": msg})
                 if action == "update":
                     return self._json({"job": jobs.public(ledger.update(key, data))})
                 if action == "delete":

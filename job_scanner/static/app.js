@@ -98,7 +98,7 @@ async function showJobs() {
 /* ---------- one job ---------- */
 const list = (items, fn = esc) => items && items.length ? `<ul class="clean">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="note">None.</p>`;
 async function showJob(key) {
-  const { job: j, ai_current } = await api("/api/jobs/" + encodeURIComponent(key));
+  const { job: j, ai_current, todo } = await api("/api/jobs/" + encodeURIComponent(key));
   const b = j.best, r = j.rules || {}, ai = j.ai;
   const statusOpts = S.statuses.map((s) => `<option value="${s}" ${s === (j.status || "") ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("");
   view.innerHTML = `
@@ -110,11 +110,13 @@ async function showJob(key) {
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
         <div>${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
         <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
+          <button class="btn primary" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
           <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
-          <a class="btn" href="#" id="to-letter">Cover letter</a></div>
+          <a class="btn" href="#" id="to-tailor">Tailored résumé</a><a class="btn" href="#" id="to-letter">Cover letter</a></div>
         <p class="note" id="ai-note">${ai && !ai_current ? "Your profile or this posting changed since Claude read it. Ask again for a fresh take." : ""}${!j.description ? " Only the search card was captured: open the posting with the extension on for Claude to read the full description." : ""}</p>
       </div>
     </div>
+    ${j.packet || j.answers ? packetHtml(key, j) : ""}
     <div class="grid2">
       <div>
         <div class="card" id="ai-card">${ai ? aiHtml(ai) : `<h2>Claude's take</h2><p class="note">${S.ai.backend ? "Not asked yet. Click Ask Claude to get a fit score, your strengths and gaps for this role, red flags and résumé tips." : "Set up Claude on the Setup page to get a full analysis on your Claude subscription."}</p>`}</div>
@@ -123,11 +125,22 @@ async function showJob(key) {
       <div>
         <div class="card">
           <h2>Tracking</h2>
+          ${j.status ? todoHtml(todo.map((n) => ({ ...n, key })), false) : ""}
           <label class="f">Status <select id="status">${statusOpts}</select></label>
           <div class="grid2"><label class="f">Applied on <input type="date" id="applied_at" value="${esc(j.applied_at || "")}"></label>
           <label class="f">Follow up on <input type="date" id="follow_up" value="${esc(j.follow_up || "")}"></label></div>
+          <div class="grid2"><label class="f">Interview on <input type="date" id="interview_at" value="${esc(j.interview_at || "")}"></label>
+          <label class="f">Contact <small>Recruiter or hiring manager</small><input id="contact" value="${esc(j.contact || "")}" placeholder="Name, email or LinkedIn"></label></div>
           <label class="f">Notes <textarea id="notes" placeholder="Recruiter name, referral, what you sent…">${esc(j.notes || "")}</textarea></label>
           <div class="actions"><button class="btn primary" id="save">Save</button><button class="btn danger" id="del">Delete job</button></div>
+        </div>
+        <div class="card">
+          <h2 id="tailor-card">Tailored résumé</h2>
+          <p class="note">A version of your résumé aimed at this job: reordered and reworded in the posting's terms, using only what your résumés already say.</p>
+          <label class="f">Start from <select id="tailor-resume"><option value="">The best match (Claude picks)</option>${S.profile.resumes.map((r) => `<option>${esc(r.name)}</option>`).join("")}</select></label>
+          <div class="actions"><button class="btn primary" id="tailor">${j.tailored ? "Build it again" : "Build a tailored résumé"}</button>
+            ${j.tailored ? exportButtons(key, "resume") : ""}</div>
+          ${j.tailored ? tailoredHtml(j.tailored) : ""}
         </div>
         <div class="card">
           <h2 id="letter-card">Cover letter</h2>
@@ -136,7 +149,7 @@ async function showJob(key) {
             <label class="f">Tone <select id="letter-tone"><option value="standard">Professional</option><option value="warm">Warm</option><option value="concise">Short and direct</option></select></label>
           </div>
           <label class="f">Anything to mention? <small>Optional: a referral, why this company, what to emphasise</small><textarea id="letter-notes" style="min-height:70px"></textarea></label>
-          <div class="actions"><button class="btn primary" id="letter">${j.cover_letter ? "Write another" : "Write a cover letter"}</button>${j.cover_letter ? `<button class="btn" id="copy-letter">Copy</button><button class="btn" id="dl-letter">Download</button>` : ""}</div>
+          <div class="actions"><button class="btn primary" id="letter">${j.cover_letter ? "Write another" : "Write a cover letter"}</button>${j.cover_letter ? `<button class="btn" id="copy-letter">Copy</button>${exportButtons(key, "letter")}` : ""}</div>
           <p class="note">Written only from what your résumés and About Me show. Read it over before you send it.</p>
           ${j.cover_letter ? `<div class="letter card" style="margin-top:12px">${esc(j.cover_letter.text)}</div>` : ""}
         </div>
@@ -144,6 +157,19 @@ async function showJob(key) {
     </div>
     ${j.description ? `<div class="card"><h2>The posting</h2><div class="desc">${esc(j.description)}</div></div>` : ""}`;
 
+  $("#easy-apply").addEventListener("click", async (e) => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>Claude is writing your résumé, letter and answers (a minute or two)…`;
+    try {
+      const out = await api(`/api/jobs/${encodeURIComponent(key)}/easy-apply`, {});
+      const failed = Object.keys(out.errors || {});
+      if (failed.length) toast(`Done, except: ${failed.join(", ")} (${Object.values(out.errors)[0]})`);
+      await showJob(key);
+      $("#packet").scrollIntoView({ behavior: "smooth" });
+    } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Easy apply"; }
+  });
+  bindPacket(view, key, j);
   $("#analyze").addEventListener("click", async (e) => {
     const btn = e.target;
     btn.disabled = true;
@@ -153,7 +179,7 @@ async function showJob(key) {
   });
   $("#save").addEventListener("click", async () => {
     try {
-      await api(`/api/jobs/${encodeURIComponent(key)}/update`, { status: $("#status").value, applied_at: $("#applied_at").value, follow_up: $("#follow_up").value, notes: $("#notes").value });
+      await api(`/api/jobs/${encodeURIComponent(key)}/update`, { status: $("#status").value, applied_at: $("#applied_at").value, follow_up: $("#follow_up").value, interview_at: $("#interview_at").value, contact: $("#contact").value, notes: $("#notes").value });
       toast("Saved.");
       await showJob(key);
     } catch (err) { toast(err.message); }
@@ -172,15 +198,56 @@ async function showJob(key) {
   });
   const copy = $("#copy-letter");
   if (copy) copy.addEventListener("click", async () => { await navigator.clipboard.writeText(j.cover_letter.text); toast("Copied."); });
-  $("#to-letter").addEventListener("click", (e) => { e.preventDefault(); $("#letter-card").scrollIntoView({ behavior: "smooth" }); $("#letter-notes").focus({ preventScroll: true }); });
-  const dl = $("#dl-letter");
-  if (dl) dl.addEventListener("click", () => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([j.cover_letter.text], { type: "text/plain" }));
-    a.download = `Cover letter - ${j.company || "job"} - ${j.title || ""}`.replace(/[\\/:*?"<>|]+/g, "").slice(0, 110) + ".txt";
-    a.click();
-    URL.revokeObjectURL(a.href);
+  $("#to-tailor").addEventListener("click", (e) => { e.preventDefault(); $("#tailor-card").scrollIntoView({ behavior: "smooth" }); });
+  if (j.status) bindTodo(view, todo.map((n) => ({ ...n, key })), () => showJob(key));
+  $("#tailor").addEventListener("click", async (e) => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>Building it…`;
+    try { await api(`/api/jobs/${encodeURIComponent(key)}/tailor`, { resume: $("#tailor-resume").value }); await showJob(key); $("#tailor-card").scrollIntoView(); }
+    catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Build a tailored résumé"; }
   });
+  const copyResume = $("#copy-resume");
+  if (copyResume) copyResume.addEventListener("click", async () => { await navigator.clipboard.writeText(j.tailored.text); toast("Copied."); });
+  $("#to-letter").addEventListener("click", (e) => { e.preventDefault(); $("#letter-card").scrollIntoView({ behavior: "smooth" }); $("#letter-notes").focus({ preventScroll: true }); });
+}
+/* ---------- the application packet (Easy apply) ---------- */
+function packetHtml(key, j) {
+  const items = (j.answers && j.answers.items) || [];
+  const doc = (name, d, what) => d ? `<div class="pk-doc"><b>${name}</b>${exportButtons(key, what)}</div>` : `<div class="pk-doc"><b>${name}</b> <span class="note">not written</span></div>`;
+  return `<div class="card" id="packet"><h2>Application packet</h2>
+    <p class="note">${j.packet ? `Put together ${esc((j.packet.at || "").slice(0, 10))}${j.packet.resume ? ` from "${esc(j.packet.resume)}"` : ""}. ` : ""}Everything here comes only from your résumés, About Me and application details. Read it over before you send anything.</p>
+    <div class="pk-docs">${doc("Tailored résumé", j.tailored, "resume")}${doc("Cover letter", j.cover_letter, "letter")}</div>
+    <h3>Answers to the questions they're likely to ask</h3>
+    ${items.length ? `<ol class="answers">${items.map((a, i) => `<li><b>${esc(a.question)}</b>
+      ${a.answer ? `<div class="answer">${esc(a.answer)}</div><div class="note">From: ${esc(a.basis)} · <button class="link" type="button" data-copy="${i}">Copy</button></div>`
+        : `<div class="note you">You'll need to answer this one: ${esc(a.basis || "your résumés don't show it")}</div>`}</li>`).join("")}</ol>` : `<p class="note">None yet.</p>`}
+    <div class="actions"><button class="btn small" id="redo-answers">${items.length ? "Answer them again" : "Draft the answers"}</button></div>
+    <h3>Filling in the form</h3>
+    <p class="note">Open the application, click the Job Scanner icon in Chrome, then <b>Fill this application</b>. It fills your details, attaches this résumé and letter where the form asks for them, and offers to draft answers to the form's own questions. It never submits, and it leaves questions about gender, race, veterans and disability to you.</p>
+    ${j.url ? `<div class="actions"><a class="btn" href="${esc(j.url)}" target="_blank" rel="noopener">Open the posting</a></div>` : ""}</div>`;
+}
+function bindPacket(root, key, j) {
+  const items = (j.answers && j.answers.items) || [];
+  root.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => { await navigator.clipboard.writeText(items[+b.dataset.copy].answer); toast("Copied."); }));
+  const redo = $("#redo-answers", root);
+  if (redo) redo.addEventListener("click", async () => {
+    redo.disabled = true;
+    redo.innerHTML = `<span class="spinner"></span>Writing…`;
+    try { await api(`/api/jobs/${encodeURIComponent(key)}/answers`, {}); await showJob(key); $("#packet").scrollIntoView(); }
+    catch (err) { toast(err.message); redo.disabled = false; redo.textContent = "Draft the answers"; }
+  });
+}
+function exportButtons(key, doc) {
+  const href = (fmt) => `/api/jobs/${encodeURIComponent(key)}/export?doc=${doc}&format=${fmt}`;
+  return `<a class="btn" href="${href("pdf")}" download>PDF</a><a class="btn" href="${href("docx")}" download>Word</a>`;
+}
+function tailoredHtml(t) {
+  return `${t.check && t.check.length ? `<div class="warn"><b>Double-check these lines.</b> They contain a number that isn't in any of your résumés, so confirm it's true or remove it before you send this:${list(t.check)}</div>` : ""}
+    ${t.left_out && t.left_out.length ? `<h3>Not claimed (your résumés don't show it)</h3>${list(t.left_out)}` : ""}
+    ${t.changes && t.changes.length ? `<h3>What changed</h3>${list(t.changes)}` : ""}
+    <h3>Preview</h3><div class="letter card">${esc(t.text)}</div>
+    <div class="actions"><button class="btn small" id="copy-resume">Copy text</button></div>`;
 }
 function aiHtml(ai) {
   const conf = { high: "High", medium: "Medium", low: "Low: the résumé or posting is too thin to judge well" }[ai.confidence] || "";
@@ -200,24 +267,66 @@ function aiHtml(ai) {
     <p class="note">Read ${esc((ai.at || "").slice(0, 10))}</p>`;
 }
 
+/* ---------- to-dos: when to apply, reach out, follow up ---------- */
+const MESSAGE_LABEL = { follow_up: "Draft the follow-up", thank_you: "Draft the thank-you", networking: "Draft the message", offer_reply: "Draft a reply" };
+function todoHtml(items, withJob) {
+  if (!items.length) return `<p class="note">Nothing to do right now.</p>`;
+  return `<ul class="todo">${items.map((n, i) => `<li class="u-${n.urgency}" data-i="${i}">
+    <div><b>${esc(n.title)}</b>${withJob ? ` · <a href="#job/${encodeURIComponent(n.key)}">${esc(n.title_job || "job")}${n.company ? " at " + esc(n.company) : ""}</a>` : ""}
+      <div class="note">${esc(n.why)}</div><div class="draft"></div></div>
+    <div class="todo-actions">${n.message ? `<button class="btn small" data-act="draft">${MESSAGE_LABEL[n.message]}</button>` : ""}<button class="btn small" data-act="done">Done</button></div>
+  </li>`).join("")}</ul>`;
+}
+function bindTodo(root, items, refresh) {
+  root.querySelectorAll(".todo li").forEach((li) => {
+    const n = items[+li.dataset.i];
+    li.querySelector('[data-act="done"]').addEventListener("click", async () => {
+      await api(`/api/jobs/${encodeURIComponent(n.key)}/update`, { done: n.id });
+      refresh();
+    });
+    const draft = li.querySelector('[data-act="draft"]');
+    if (draft) draft.addEventListener("click", async () => {
+      draft.disabled = true;
+      draft.innerHTML = `<span class="spinner"></span>Writing…`;
+      try {
+        const { message } = await api(`/api/jobs/${encodeURIComponent(n.key)}/message`, { kind: n.message });
+        const box = li.querySelector(".draft");
+        box.innerHTML = `<label class="f">Subject <input readonly></label><textarea readonly style="min-height:160px"></textarea>
+          <div class="actions"><button class="btn small" type="button">Copy</button></div>`;
+        box.querySelector("input").value = message.subject;
+        box.querySelector("textarea").value = message.body;
+        box.querySelector("button").addEventListener("click", async () => { await navigator.clipboard.writeText(`${message.subject}\n\n${message.body}`); toast("Copied."); });
+        draft.textContent = "Write it again";
+      } catch (err) { toast(err.message); draft.textContent = MESSAGE_LABEL[n.message]; }
+      draft.disabled = false;
+    });
+  });
+}
+
 /* ---------- tracker ---------- */
 async function showTracker() {
   const out = await api("/api/jobs?status=tracked&sort=newest");
   const cols = ["saved", "applied", "interviewing", "offer"];
   const by = (s) => out.jobs.filter((j) => j.status === s);
   const closed = out.jobs.filter((j) => ["rejected", "withdrawn"].includes(j.status));
-  const today = new Date().toISOString().slice(0, 10);
-  const due = out.jobs.filter((j) => j.follow_up && j.follow_up <= today && !["rejected", "withdrawn", "offer"].includes(j.status));
+  const { todo } = await api("/api/todo");
   const mini = (j) => `<article class="job" data-key="${esc(j.key)}"><div><div class="t">${esc(j.title)}</div><div class="m">${esc(j.company || "")}</div>
     <div class="m">${j.best.by === "ai" ? "✦ " : ""}${j.best.verdict} ${j.best.score}${j.applied_at ? " · applied " + esc(j.applied_at) : ""}${j.follow_up ? " · follow up " + esc(j.follow_up) : ""}</div></div></article>`;
   view.innerHTML = `<h1>Tracker</h1><p class="lede">Your applications, from saved to offer. Change a job's status on its page, or with the buttons in the extension's panel.</p>
-    ${due.length ? `<div class="card"><h2>Follow up today</h2><div class="jobs">${due.map(mini).join("")}</div></div>` : ""}
+    <div class="card"><h2>To do</h2><p class="note">When to apply, reach out, follow up and say thank you, worked out from the dates you record. Claude can draft each message.</p>${todoHtml(todo, true)}</div>
     <div class="board">${cols.map((c) => `<section class="col"><h2>${STATUS_LABEL[c]} <span>${by(c).length}</span></h2><div class="jobs">${by(c).map(mini).join("") || `<p class="note">None yet.</p>`}</div></section>`).join("")}</div>
     ${closed.length ? `<div class="card" style="margin-top:16px"><h2>Closed</h2><div class="jobs">${closed.map(mini).join("")}</div></div>` : ""}`;
   bindRows(view);
+  bindTodo(view, todo, showTracker);
 }
 
 /* ---------- profile ---------- */
+const APPLY_TEXT = [["first_name", "First name"], ["last_name", "Last name"], ["email", "Email"], ["phone", "Phone"],
+  ["street", "Street address"], ["city", "City"], ["state", "State"], ["postal_code", "ZIP / postal code"], ["country", "Country", "United States"],
+  ["linkedin", "LinkedIn", "linkedin.com/in/…"], ["website", "Website or portfolio"], ["github", "GitHub"],
+  ["current_title", "Current job title"], ["current_company", "Current employer"], ["school", "School"], ["degree", "Degree", "B.S. Accounting"],
+  ["start_date", "Earliest start", "Two weeks' notice"], ["salary_expectation", "Salary expectation", "$60,000–$70,000"], ["how_heard", "How you heard about jobs", "LinkedIn"]];
+const APPLY_YES_NO = [["work_authorized", "Authorized to work in the US?"], ["sponsorship", "Will you need visa sponsorship?"], ["relocate", "Willing to relocate?"], ["over_18", "18 or older?"]];
 function showProfile() {
   const p = S.profile, c = S.choices;
   const checks = (name, opts, chosen) => `<div class="checks">${opts.map((o) => `<label><input type="checkbox" name="${name}" value="${o}" ${chosen.includes(o) ? "checked" : ""}> ${o}</label>`).join("")}</div>`;
@@ -257,6 +366,11 @@ function showProfile() {
           </div>
         </div>
       </div>
+      <div class="card"><h2>4. Application details</h2>
+        <p class="note">What application forms ask for again and again. The extension's <b>Fill this application</b> copies these into forms you open, for you to check before you submit. Leave anything blank you'd rather type yourself. Yes/no answers are only ever taken from here, never guessed.</p>
+        <div class="grid3">${APPLY_TEXT.map(([k, label, ph]) => `<label class="f">${label}<input name="a_${k}" value="${esc((p.apply || {})[k] || "")}" placeholder="${esc(ph || "")}"></label>`).join("")}</div>
+        <div class="grid3">${APPLY_YES_NO.map(([k, label]) => `<label class="f">${label}<select name="a_${k}">${["", "yes", "no"].map((v) => `<option value="${v}" ${((p.apply || {})[k] || "") === v ? "selected" : ""}>${{ "": "Leave blank", yes: "Yes", no: "No" }[v]}</option>`).join("")}</select></label>`).join("")}</div>
+      </div>
       <div class="actions"><button class="btn primary" type="submit">Save profile</button></div>
     </form>`;
   const f = $("#pf");
@@ -269,6 +383,8 @@ function showProfile() {
     out.locations = chosenPlaces;
     for (const k of ["remote", "job_types", "seniority"]) out[k] = fd.getAll(k);
     out.max_age_days = S.profile.max_age_days;
+    out.apply = {};
+    for (const [k] of APPLY_TEXT.concat(APPLY_YES_NO)) out.apply[k] = fd.get("a_" + k) || "";
     return out;
   };
   f.addEventListener("submit", async (e) => {

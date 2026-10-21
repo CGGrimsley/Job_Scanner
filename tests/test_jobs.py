@@ -57,3 +57,14 @@ def test_csv_export():
     L = jobs.Ledger()
     L.add([card()], P)
     assert "Data Analyst" in L.csv().splitlines()[1]
+
+
+def test_for_page_finds_the_job_an_application_form_belongs_to():
+    from job_scanner import jobs
+    L = jobs.Ledger()
+    L.add([{"source": "lever", "id": "0b7c9e2a-1111", "kind": "item", "title": "Analyst",
+            "url": "https://jobs.lever.co/acme/0b7c9e2a-1111"}], {})
+    assert L.for_page("https://jobs.lever.co/acme/0b7c9e2a-1111/apply")["id"] == "0b7c9e2a-1111"
+    assert L.for_page("https://acme.wd1.myworkdayjobs.com/x") is None
+    L.set_doc("lever:0b7c9e2a-1111", "packet", {"resume": ""})
+    assert L.for_page("https://acme.wd1.myworkdayjobs.com/x")["id"] == "0b7c9e2a-1111"  # Easy apply was just used on it

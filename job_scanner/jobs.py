@@ -12,7 +12,8 @@ import hashlib
 import io
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from . import scoring, store
 
@@ -125,10 +126,13 @@ class Ledger:
                     rec.setdefault("history", []).append({"at": now_iso(), "status": st})
                     if st == "applied" and not rec.get("applied_at"):
                         rec["applied_at"] = now_iso()[:10]
-            for k in ("notes",):
+            for k, n in (("notes", 5000), ("contact", 300)):
                 if k in changes:
-                    rec[k] = str(changes[k] or "")[:5000]
-            for k in ("applied_at", "follow_up"):
+                    rec[k] = str(changes[k] or "")[:n]
+            if "done" in changes:  # a tracker to-do the person has dealt with (or dismissed)
+                nid = str(changes["done"])[:80]
+                rec["done"] = [d for d in rec.get("done", []) if d != nid] + [nid]
+            for k in ("applied_at", "follow_up", "interview_at"):
                 if k in changes:
                     v = str(changes[k] or "")
                     if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
@@ -142,6 +146,14 @@ class Ledger:
         with _lock:
             rec = self.jobs[key]
             rec["ai"] = {**analysis, "at": now_iso(), "profile": profile_fp, "desc": desc_hash(rec)}
+            self.save()
+            return rec
+
+    def set_doc(self, key: str, field: str, doc: dict) -> dict:
+        """Something Claude wrote for this job: a tailored résumé, or a follow-up or thank-you message."""
+        with _lock:
+            rec = self.jobs[key]
+            rec[field] = {**doc, "at": now_iso()}
             self.save()
             return rec
 
@@ -200,6 +212,26 @@ class Ledger:
         else:
             recs.sort(key=lambda r: (best(r)["score"], r.get("last_seen") or ""), reverse=True)
         return recs
+
+    def for_page(self, url: str, days: int = 3) -> dict | None:
+        """The job an application form belongs to: the posting itself, one whose id is in the form's address, or
+        else the job Easy apply was last used on in the past few days."""
+        u = urlparse(url or "")
+        here = (u.netloc.lower().removeprefix("www.") + u.path.rstrip("/")).lower()
+        full = (url or "").lower()
+        recs = list(self.jobs.values())
+        for r in recs:
+            ru = urlparse(r.get("url") or "")
+            there = (ru.netloc.lower().removeprefix("www.") + ru.path.rstrip("/")).lower()
+            if there and (here == there or here.startswith(there + "/")):
+                return r
+        for r in recs:
+            jid = str(r.get("id") or "").lower()
+            if len(jid) >= 6 and re.search(r"(?<![0-9a-z])" + re.escape(jid) + r"(?![0-9a-z])", full):
+                return r
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        recent = [r for r in recs if (r.get("packet") or {}).get("at", "") >= cutoff.isoformat(timespec="seconds")]
+        return max(recent, key=lambda r: r["packet"]["at"]) if recent else None
 
     def csv(self) -> str:
         buf = io.StringIO()

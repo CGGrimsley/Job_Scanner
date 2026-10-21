@@ -398,8 +398,9 @@
           ${list("Gaps", ai.gaps, (x) => `${x.requirement} (${x.severity}). ${x.how_to_address}`)}
           ${list("Red flags", ai.red_flags)}${ai.best_resume ? `<h4>Résumé to send</h4><p>${esc(ai.best_resume)}</p>` : ""}${list("Conflicts with what you want", ai.preference_conflicts)}${list("Résumé tips", ai.resume_tips)}`
           : `${list("Good", r.reasons)}${list("Watch out", r.cautions)}`}
+        <div class="row"><button class="primary" data-act="easy" ${busy ? "disabled" : ""}>${busy === "easy" ? "Writing your résumé, letter and answers…" : j.packet ? "Easy apply again" : "Easy apply"}</button></div>
         <div class="row">
-          <button class="primary" data-act="analyze" ${busy ? "disabled" : ""}>${busy ? "Claude is reading…" : ai ? "Ask Claude again" : "Ask Claude"}</button>
+          <button data-act="analyze" ${busy ? "disabled" : ""}>${busy === true ? "Claude is reading…" : ai ? "Ask Claude again" : "Ask Claude"}</button>
           <button data-act="saved">${j.status === "saved" ? "Saved ✓" : "Save"}</button>
           <button data-act="applied">${j.status === "applied" ? "Applied ✓" : "I applied"}</button>
           <button data-act="letter" ${busy || letter === null ? "disabled" : ""}>${letter === null ? "Writing…" : "Cover letter"}</button>
@@ -431,6 +432,22 @@
     }
     function act(a) {
       if (a === "analyze") return analyze(false);
+      if (a === "easy") {
+        if (busy) return;
+        busy = "easy"; note = ""; render();
+        status("ok", "Easy apply: Claude is writing…");
+        send({ type: "easy-apply", source: job.source, id: job.id }, (r) => {
+          busy = false;
+          if (r && r.job) {
+            data = { job: r.job, mark: r.mark }; marks.set(job.id, r.mark); tagFor(r.mark); applyStamps();
+            const failed = Object.keys(r.errors || {});
+            note = "Your tailored résumé, cover letter and answers are ready in the app (Open in app), and the job is saved to your tracker. " +
+              "On the application form, click the Job Scanner icon and Fill this application." + (failed.length ? ` Not done: ${failed.join(", ")}.` : "");
+          } else note = (r && r.error) || "Claude couldn't be reached.";
+          render();
+        });
+        return;
+      }
       if (a === "app") return send({ type: "open-app", key: `${job.source}:${job.id}` });
       if (a === "copy") { navigator.clipboard.writeText(letter).then(() => { note = "Copied. Read it over before you send it."; render(); }); return; }
       if (a === "letter") {

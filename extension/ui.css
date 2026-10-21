@@ -25,3 +25,5 @@ label { display: block; margin: 12px 0; }
 label small { color: var(--muted); display: block; }
 input:not([type=checkbox]) { width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg); color: var(--ink); font: inherit; }
+.apply { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+[hidden] { display: none !important; }

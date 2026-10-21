@@ -97,3 +97,80 @@ def test_places_and_cover_letter_endpoints(server, monkeypatch):
     status, out = call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Data", "tone": "warm"})
     assert out["job"]["cover_letter"] == {**out["job"]["cover_letter"], "text": "Letter from Data (warm)", "resume": "Data"}
     assert call(server + "/api/jobs/indeed:abc123def456/cover-letter", {"resume": "Nope"})[0] == 400
+
+
+def test_tailor_message_export_and_todo(server, monkeypatch):
+    from job_scanner import ai
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Data Analyst", "company": "Acme"}]}, tok)
+    call(server + "/api/profile", {"profile": {"resumes": [{"name": "Data", "text": "Built 12 dashboards"}]}})
+    monkeypatch.setattr(ai, "tailor_resume", lambda job, text, name: {
+        "resume": "# Sam\n- Built 12 dashboards\n- Cut costs 30%", "changes": ["Moved dashboards up"], "left_out": ["Power BI"]})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/tailor", {})
+    t = out["job"]["tailored"]
+    assert status == 200 and t["check"] == ["Cut costs 30%"] and t["left_out"] == ["Power BI"]
+    with urllib.request.urlopen(server + "/api/jobs/indeed:abc123def456/export?doc=resume&format=pdf") as r:
+        assert r.read(5) == b"%PDF-" and "Resume%20-%20Acme" in r.headers["Content-Disposition"]
+    assert call(server + "/api/jobs/indeed:abc123def456/export?doc=letter&format=pdf")[0] == 400  # no letter yet
+    monkeypatch.setattr(ai, "draft_message", lambda job, text, kind, notes: {"subject": "Following up", "body": "Hi [Name]"})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/message", {"kind": "follow_up"})
+    assert status == 200 and out["message"]["subject"] == "Following up"
+    assert call(server + "/api/jobs/indeed:abc123def456/message", {"kind": "rant"})[0] == 400
+    call(server + "/api/jobs/indeed:abc123def456/update", {"status": "applied"})
+    _, out = call(server + "/api/todo")
+    assert out["todo"][0]["id"] == "reach-out"
+    call(server + "/api/jobs/indeed:abc123def456/update", {"done": "reach-out"})
+    assert call(server + "/api/todo")[1]["todo"] == []
+
+
+def test_easy_apply_builds_the_packet_and_autofill_finds_it(server, monkeypatch):
+    from job_scanner import ai
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "greenhouse", "id": "acme-4012345", "kind": "item", "title": "Analyst",
+                                             "company": "Acme", "description": "SQL",
+                                             "url": "https://boards.greenhouse.io/acme/jobs/4012345"}]}, tok)
+    call(server + "/api/profile", {"profile": {"name": "Sam Lee", "skills": "SQL",
+                                               "resumes": [{"name": "Data", "text": "SQL reports"}, {"name": "Ops", "text": "Ops"}],
+                                               "apply": {"email": "sam@example.com", "work_authorized": "yes", "linkedin": "linkedin.com/in/sam"}}})
+    seen = {}
+
+    def analyze_job(job, text):
+        return {"fit_score": 60, "qualification_score": 60, "confidence": "medium", "verdict": "Consider", "summary": "ok",
+                "best_resume": "Data"}
+
+    def tailor_resume(job, text, name):
+        seen["tailor"] = name
+        return {"resume": "# Sam\n- SQL reports", "changes": [], "left_out": []}
+
+    def cover_letter(job, text, notes, name, tone):
+        seen["letter"] = name
+        return "Dear [Hiring Manager],"
+
+    def answer_questions(job, text, facts, questions=None):
+        seen["facts"] = facts
+        return [{"question": "Why Acme?", "answer": "Your SQL work", "basis": "Data résumé"},
+                {"question": "Years of Python?", "answer": "", "basis": "Not shown"}]
+
+    for name, fn in (("analyze_job", analyze_job), ("tailor_resume", tailor_resume), ("cover_letter", cover_letter),
+                     ("answer_questions", answer_questions)):
+        monkeypatch.setattr(ai, name, fn)
+    status, out = call(server + "/api/jobs/greenhouse:acme-4012345/easy-apply", {})
+    j = out["job"]
+    assert status == 200 and not out["errors"]
+    assert seen["tailor"] == seen["letter"] == "Data"  # the assessment's pick, so letter and résumé agree
+    assert "Legally authorized to work in the country of the job: Yes" in seen["facts"]
+    assert j["status"] == "saved" and j["packet"]["resume"] == "Data" and len(j["answers"]["items"]) == 2
+
+    # the application form, embedded on the company's own site with the Greenhouse id in its address
+    status, fill = call(server + "/api/capture/autofill", {"url": "https://acme.com/careers?gh_jid=4012345"}, tok)
+    assert status == 200 and fill["job"]["key"] == "greenhouse:acme-4012345"
+    assert fill["fields"]["email"] == "sam@example.com" and fill["fields"]["first_name"] == "Sam"
+    assert fill["fields"]["linkedin"] == "https://linkedin.com/in/sam"
+    assert [a["question"] for a in fill["answers"]] == ["Why Acme?"]  # blank answers are left to the person
+    assert fill["has_resume"] and fill["letter"]
+    req = urllib.request.Request(server + "/api/capture/export?key=greenhouse:acme-4012345&doc=resume&format=pdf", headers=tok)
+    with urllib.request.urlopen(req) as r:
+        assert r.read(5) == b"%PDF-"
+    assert call(server + "/api/capture/autofill", {"url": "https://acme.com/careers"})[0] == 401
+    status, out = call(server + "/api/capture/answers", {"key": "greenhouse:acme-4012345", "questions": ["Why Acme?"]}, tok)
+    assert status == 200 and out["answers"][0]["answer"] == "Your SQL work"

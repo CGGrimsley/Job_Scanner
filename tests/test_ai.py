@@ -85,3 +85,19 @@ def test_cli_launches_the_resolved_command(monkeypatch):
     monkeypatch.setattr(ai.subprocess, "run", fake_run(captured, {"structured_output": {"ok": True}}))
     ai.ask_json("s", "p", {})
     assert captured["cmd"][:2] == ["C:/npm/claude.exe", "-p"]
+
+
+def test_answers_never_cover_personal_questions(monkeypatch):
+    from job_scanner import ai
+    asked = {}
+
+    def fake(system, prompt, schema, kind="other", files=None):
+        asked["prompt"] = prompt
+        return {"answers": [{"question": "What is your gender?", "answer": "Male", "basis": "guess"},
+                            {"question": "Why us?", "answer": "Because", "basis": "About me"}]}
+
+    monkeypatch.setattr(ai, "ask_json", fake)
+    out = ai.answer_questions({"title": "Analyst"}, "résumé", "", ["Why us?", "Are you a protected veteran?"])
+    assert "- Why us?" in asked["prompt"] and "protected veteran" not in asked["prompt"]
+    assert out[0] == {"question": "What is your gender?", "answer": "", "basis": "guess"}
+    assert ai.answer_questions({"title": "x"}, "r", "", ["Race / ethnicity"]) == []

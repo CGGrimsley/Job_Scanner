@@ -30,7 +30,16 @@ DEFAULT = {
     "years_experience": None,
     "min_salary": None,      # yearly; hourly pay is converted at 2,080 hours
     "max_age_days": 30,      # postings older than this lose points
+    "apply": {},             # application details for forms: contact, links, work authorization (APPLY_FIELDS)
 }
+
+# What application forms ask for again and again. Only ever filled in by the person; the extension copies these
+# into forms they open, and Claude may use the yes/no and free-text ones when answering a form's questions.
+APPLY_FIELDS = {"first_name": 60, "last_name": 60, "email": 120, "phone": 40, "street": 120, "city": 80, "state": 60,
+                "postal_code": 20, "country": 60, "linkedin": 200, "website": 200, "github": 200,
+                "current_title": 120, "current_company": 120, "school": 120, "degree": 120,
+                "start_date": 80, "salary_expectation": 80, "how_heard": 80}
+APPLY_YES_NO = ("work_authorized", "sponsorship", "relocate", "over_18")
 
 
 def _list(v, n=60, lines_only=False) -> list:
@@ -74,7 +83,40 @@ def clean(raw: dict) -> dict:
     p["min_salary"] = _num(raw.get("min_salary"))
     age = _num(raw.get("max_age_days"))
     p["max_age_days"] = int(age) if age else DEFAULT["max_age_days"]
+    p["apply"] = clean_apply(raw.get("apply"))
     return p
+
+
+def clean_apply(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for k, n in APPLY_FIELDS.items():
+        v = " ".join(str(raw.get(k) or "").split())[:n]
+        if v:
+            out[k] = v
+    for k in APPLY_YES_NO:
+        if raw.get(k) in ("yes", "no"):
+            out[k] = raw[k]
+    for k in ("linkedin", "website", "github"):
+        if out.get(k) and not out[k].lower().startswith(("http://", "https://")):
+            out[k] = "https://" + out[k]
+    return out
+
+
+def apply_facts(p: dict) -> str:
+    """The application details Claude may use when answering a form's questions (no address or phone)."""
+    a = p.get("apply") or {}
+    said = {"yes": "Yes", "no": "No"}
+    lines = [f"{label}: {said[a[k]]}" for k, label in (
+        ("work_authorized", "Legally authorized to work in the country of the job"),
+        ("sponsorship", "Will need visa sponsorship"), ("relocate", "Willing to relocate"),
+        ("over_18", "18 or older")) if a.get(k) in said]
+    for k, label in (("start_date", "Earliest start"), ("salary_expectation", "Salary expectation"),
+                     ("current_title", "Current title"), ("current_company", "Current employer"),
+                     ("school", "School"), ("degree", "Degree")):
+        if a.get(k):
+            lines.append(f"{label}: {a[k]}")
+    return "\n".join(lines)
 
 
 MAX_RESUMES = 8
@@ -120,7 +162,9 @@ def is_empty(p: dict) -> bool:
 
 def fingerprint(p: dict) -> str:
     """Changes whenever anything Claude sees changes, so an old analysis can be marked out of date."""
-    return hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest()[:12]
+    # application details (phone, links, authorization) don't change a fit assessment
+    seen = {k: v for k, v in p.items() if k != "apply"}
+    return hashlib.sha256(json.dumps(seen, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def for_prompt(p: dict) -> str:

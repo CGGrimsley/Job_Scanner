@@ -46,6 +46,15 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   } else if (msg.type === "cover-letter") {
     call("/api/capture/cover-letter", { source: msg.source, id: msg.id }).then(reply);
     return true;
+  } else if (msg.type === "easy-apply") {
+    call("/api/capture/easy-apply", { source: msg.source, id: msg.id }).then(reply);
+    return true; // several Claude calls: a minute or two
+  } else if (msg.type === "fill-tab") {
+    fillTab(msg.tabId).then(reply);
+    return true;
+  } else if (msg.type === "answer-tab") {
+    answerTab(msg.tabId).then(reply);
+    return true;
   } else if (msg.type === "set-status") {
     call("/api/capture/status", { source: msg.source, id: msg.id, status: msg.status }).then(reply);
     return true;
@@ -105,6 +114,86 @@ chrome.tabs.onRemoved.addListener((tab) => perTab.delete(tab));
 chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) perTab.delete(tab); });
 
 chrome.notifications.onClicked.addListener((id) => { if (id.startsWith("https://")) chrome.tabs.create({ url: id }); });
+
+/* ---------- filling application forms (only when the person clicks Fill this application) ---------- */
+const fillState = new Map(); // tabId -> { key, frames: frame ids with questions left }
+
+async function fetchFile(path) {
+  const s = await settings();
+  try {
+    const res = await fetch(`${s.server}${path}`, { headers: { "X-Scanner-Token": s.token } });
+    if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get("Content-Disposition") || "");
+    return { data: btoa(bin), name: m ? decodeURIComponent(m[1]) : "document.pdf" };
+  } catch (_) { return null; }
+}
+
+function inFrames(tabId, frameIds, func, args = []) {
+  const target = frameIds ? { tabId, frameIds } : { tabId, allFrames: true };
+  return chrome.scripting.executeScript({ target, func, args }).catch(() => []);
+}
+const banner = (tabId, text) => inFrames(tabId, [0], (t) => window.__jobScannerBanner && window.__jobScannerBanner(t), [text]);
+
+async function fillTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const data = await call("/api/capture/autofill", { url: tab.url });
+  if (!data.ok) return data;
+  if (data.job) {
+    const key = encodeURIComponent(data.job.key);
+    if (data.has_resume) data.resume_pdf = await fetchFile(`/api/capture/export?key=${key}&doc=resume&format=pdf`);
+    if (data.letter) data.letter_pdf = await fetchFile(`/api/capture/export?key=${key}&doc=letter&format=pdf`);
+  }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["fill.js"] });
+  } catch (_) {
+    return { ok: false, error: "Chrome doesn't allow filling this page." };
+  }
+  const results = await inFrames(tabId, null, (d) => (window.__jobScannerFill ? window.__jobScannerFill(d) : null), [data]);
+  const out = { ok: true, job: data.job, filled: 0, attached: [], personal: [], questions: 0, need_access: [] };
+  const frames = [];
+  for (const r of results) {
+    const x = r.result;
+    if (!x) continue;
+    out.filled += x.filled.length;
+    out.attached.push(...x.attached);
+    out.personal.push(...x.personal);
+    out.questions += x.questions.length;
+    if (x.questions.length) frames.push(r.frameId);
+    for (const host of x.frames || []) {
+      if (!(await chrome.permissions.contains({ origins: [`https://${host}/*`] }))) out.need_access.push(host);
+    }
+  }
+  fillState.set(tabId, { key: data.job ? data.job.key : "", frames });
+  const bits = [`Job Scanner filled ${out.filled} field${out.filled === 1 ? "" : "s"}`];
+  if (out.attached.length) bits.push(`attached your ${out.attached.join(" and ").toLowerCase()}`);
+  let text = bits.join(" and ") + ". Check everything before you submit: nothing has been sent.";
+  if (out.personal.length) text += ` ${out.personal.length} personal question${out.personal.length === 1 ? " is" : "s are"} left for you.`;
+  if (out.questions) text += ` ${out.questions} question${out.questions === 1 ? "" : "s"} still empty.`;
+  banner(tabId, text);
+  return out;
+}
+
+async function answerTab(tabId) {
+  const st = fillState.get(tabId);
+  if (!st || !st.frames.length) return { ok: false, error: "Fill the form first; there are no open questions." };
+  if (!st.key) return { ok: false, error: "Job Scanner doesn't know which job this form is for. Open the posting with the extension on (or use Easy apply on it) first." };
+  const asked = await inFrames(tabId, st.frames, () => (window.__jobScannerQuestions ? window.__jobScannerQuestions() : []));
+  const questions = [...new Set(asked.flatMap((r) => r.result || []))].slice(0, 25);
+  if (!questions.length) return { ok: false, error: "No open questions left." };
+  banner(tabId, `Claude is drafting answers to ${questions.length} question${questions.length === 1 ? "" : "s"} from your résumés…`);
+  const out = await call("/api/capture/answers", { key: st.key, questions });
+  if (!out.ok) { banner(tabId, out.error); return out; }
+  const done = await inFrames(tabId, st.frames, (items) => (window.__jobScannerAnswer ? window.__jobScannerAnswer(items) : 0), [out.answers]);
+  const n = done.reduce((t, r) => t + (r.result || 0), 0);
+  const blank = out.answers.filter((a) => !a.answer).length;
+  banner(tabId, n ? `Claude drafted ${n} answer${n === 1 ? "" : "s"} (outlined in amber). Read each one before you submit.` +
+    (blank ? ` ${blank} couldn't be answered from your résumés, so they're left for you.` : "")
+    : `Your résumés don't show what ${questions.length === 1 ? "this question asks" : "these questions ask"}, so Claude left ${questions.length === 1 ? "it" : "them"} for you to answer.`);
+  return { ok: true, answered: n, blank, answers: out.answers };
+}
 
 // Keep up to date: when the app's copy of the extension (after `git pull`) is newer than the one loaded, reload.
 function newer(a, b) {
