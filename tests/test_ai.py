@@ -63,3 +63,25 @@ def test_daily_limit(monkeypatch):
     assert not ai.over_limit()
     ai.log_usage("analyze", "cli", {})
     assert ai.over_limit()
+
+
+def test_windows_uses_the_real_exe_not_the_cmd_shim(monkeypatch, tmp_path):
+    shim = tmp_path / "claude.cmd"
+    shim.write_text("")
+    exe = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: str(shim) if name == "claude" else None)
+    monkeypatch.setattr(ai.os, "name", "nt")
+    assert ai.claude_command() == [str(exe)]
+    exe.unlink()
+    assert ai.claude_command() == [str(shim)]  # nothing better beside it
+
+
+def test_cli_launches_the_resolved_command(monkeypatch):
+    monkeypatch.setenv("JOB_SCANNER_AI", "cli")
+    monkeypatch.setattr(ai, "claude_command", lambda: ["C:/npm/claude.exe"])
+    captured = {}
+    monkeypatch.setattr(ai.subprocess, "run", fake_run(captured, {"structured_output": {"ok": True}}))
+    ai.ask_json("s", "p", {})
+    assert captured["cmd"][:2] == ["C:/npm/claude.exe", "-p"]

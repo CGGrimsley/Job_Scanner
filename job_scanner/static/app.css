@@ -84,3 +84,15 @@ ul.clean { margin: 0; padding-left: 20px; } ul.clean li { margin: 4px 0; }
 @media (max-width: 560px) { .board { grid-template-columns: 1fr; } }
 
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-weight: 600; max-width: calc(100% - 32px); z-index: 10; }
+.resume { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.resume-head { display: flex; gap: 8px; margin-bottom: 8px; }
+.resume-head input { flex: 1; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--apply-bg); color: var(--apply); font-weight: 600; font-size: 13px; }
+.chip button { border: 0; background: none; color: inherit; font-size: 16px; line-height: 1; cursor: pointer; padding: 0 6px; border-radius: 999px; }
+.chip button:hover { background: rgba(0,0,0,.08); }
+.picker { position: relative; }
+.picker input { width: 100%; font-weight: 400; }
+.picker ul { position: absolute; z-index: 6; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.15); max-height: 280px; overflow: auto; font-weight: 400; }
+.picker li { padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.picker li.on, .picker li:hover { background: var(--soft); }

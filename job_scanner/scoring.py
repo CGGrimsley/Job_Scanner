@@ -143,9 +143,17 @@ def _hit(term: str, text: str) -> bool:
 
 
 def _place_match(location: str, places: list) -> bool:
+    from .places import STATE_CODES
+
     loc = (location or "").lower()
     for p in places:
-        city = p.split(",")[0].strip().lower()
+        name = p.strip().lower()
+        code = STATE_CODES.get(name)
+        if code:  # a whole state: "Raleigh, NC" and "Remote in North Carolina" both count
+            if name in loc or re.search(r",\s*" + code.lower() + r"\b", loc):
+                return True
+            continue
+        city = name.split(",")[0].strip()
         if city and city in loc:
             return True
     return False

@@ -43,6 +43,9 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       call("/api/capture/analyze", { source: msg.source, id: msg.id, auto: !!msg.auto, force: !!msg.force }).then(reply);
     });
     return true; // Claude takes a little while
+  } else if (msg.type === "cover-letter") {
+    call("/api/capture/cover-letter", { source: msg.source, id: msg.id }).then(reply);
+    return true;
   } else if (msg.type === "set-status") {
     call("/api/capture/status", { source: msg.source, id: msg.id, status: msg.status }).then(reply);
     return true;

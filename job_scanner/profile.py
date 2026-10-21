@@ -18,7 +18,7 @@ JOB_TYPE_CHOICES = ("full-time", "part-time", "contract", "temporary", "internsh
 DEFAULT = {
     "name": "",
     "about_me": "",          # free text: who they are, what they want next, what matters to them
-    "resume": "",            # plain text of the résumé
+    "resumes": [],           # [{"name": "Data analyst", "text": "..."}]: people keep several targeted résumés
     "target_titles": [],     # e.g. ["data analyst", "business analyst"]
     "skills": [],            # what they can do; matched against postings
     "avoid_keywords": [],    # words that rule a posting out (e.g. "commission only", "door to door")
@@ -33,9 +33,10 @@ DEFAULT = {
 }
 
 
-def _list(v, n=60) -> list:
+def _list(v, n=60, lines_only=False) -> list:
     if isinstance(v, str):
-        v = [x for x in v.replace("\n", ",").split(",")]
+        # place names carry their own commas ("Raleigh, NC"), so those are one per line
+        v = v.split("\n") if lines_only else v.replace("\n", ",").split(",")
     if not isinstance(v, list):
         return []
     out = []
@@ -62,10 +63,10 @@ def clean(raw: dict) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     p["name"] = str(raw.get("name") or "").strip()[:120]
     p["about_me"] = str(raw.get("about_me") or "").strip()[:8000]
-    p["resume"] = str(raw.get("resume") or "").strip()[:40000]
+    p["resumes"] = clean_resumes(raw)
     p["dealbreakers"] = str(raw.get("dealbreakers") or "").strip()[:2000]
     for k in ("target_titles", "skills", "avoid_keywords", "locations"):
-        p[k] = _list(raw.get(k, DEFAULT[k]))
+        p[k] = _list(raw.get(k, DEFAULT[k]), lines_only=(k == "locations"))
     p["remote"] = [x for x in _list(raw.get("remote", DEFAULT["remote"])) if x in REMOTE_CHOICES] or list(REMOTE_CHOICES)
     p["seniority"] = [x for x in _list(raw.get("seniority", [])) if x in SENIORITY_CHOICES]
     p["job_types"] = [x for x in _list(raw.get("job_types", DEFAULT["job_types"])) if x in JOB_TYPE_CHOICES]
@@ -74,6 +75,33 @@ def clean(raw: dict) -> dict:
     age = _num(raw.get("max_age_days"))
     p["max_age_days"] = int(age) if age else DEFAULT["max_age_days"]
     return p
+
+
+MAX_RESUMES = 8
+
+
+def clean_resumes(raw: dict) -> list:
+    """The résumé list, from `resumes` or (profiles saved before there could be several) a single `resume`."""
+    items = raw.get("resumes")
+    if not isinstance(items, list):
+        items = [{"name": "Main résumé", "text": raw["resume"]}] if raw.get("resume") else []
+    out, names = [], set()
+    for i, r in enumerate(items):
+        if not isinstance(r, dict):
+            continue
+        text = str(r.get("text") or "").strip()[:40000]
+        if not text:
+            continue
+        name = str(r.get("name") or "").strip()[:80] or f"Résumé {i + 1}"
+        while name.lower() in names:
+            name += " (2)"
+        names.add(name.lower())
+        out.append({"name": name, "text": text})
+    return out[:MAX_RESUMES]
+
+
+def all_resume_text(p: dict) -> str:
+    return "\n\n".join(f"# {r['name']}\n{r['text']}" for r in p.get("resumes") or [])
 
 
 def load() -> dict:
@@ -87,7 +115,7 @@ def save(raw: dict) -> dict:
 
 
 def is_empty(p: dict) -> bool:
-    return not (p.get("target_titles") or p.get("skills") or p.get("resume") or p.get("about_me"))
+    return not (p.get("target_titles") or p.get("skills") or p.get("resumes") or p.get("about_me"))
 
 
 def fingerprint(p: dict) -> str:
@@ -122,6 +150,12 @@ def for_prompt(p: dict) -> str:
     out = "\n".join(lines)
     if p["about_me"]:
         out += "\n\n## About me (in their words)\n" + p["about_me"]
-    if p["resume"]:
-        out += "\n\n## Résumé\n" + p["resume"]
+    rs = p["resumes"]
+    if len(rs) == 1:
+        out += f"\n\n## Résumé (\"{rs[0]['name']}\")\n" + rs[0]["text"]
+    elif rs:
+        out += (f"\n\n## Résumés\nThey keep {len(rs)} targeted versions of their résumé. All describe the same person, "
+                "so experience shown in any of them counts as evidence.")
+        for r in rs:
+            out += f"\n\n### Résumé: \"{r['name']}\"\n" + r["text"]
     return out

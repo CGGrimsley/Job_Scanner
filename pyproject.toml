@@ -20,4 +20,4 @@ job-scanner = "job_scanner.cli:main"
 packages = ["job_scanner"]
 
 [tool.setuptools.package-data]
-job_scanner = ["static/*"]
+job_scanner = ["static/*", "places.json"]

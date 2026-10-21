@@ -28,7 +28,7 @@ async function loadState() {
   pill.textContent = S.ai.backend ? `Claude: ${S.ai.backend === "cli" ? "your subscription" : "API key"}` : "Claude: not set up";
   pill.className = "pill" + (S.ai.backend ? " ok" : "");
 }
-const profileEmpty = () => !(S.profile.target_titles.length || S.profile.skills.length || S.profile.resume || S.profile.about_me);
+const profileEmpty = () => !(S.profile.target_titles.length || S.profile.skills.length || S.profile.resumes.length || S.profile.about_me);
 
 /* ---------- routing ---------- */
 async function route() {
@@ -110,7 +110,8 @@ async function showJob(key) {
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
         <div>${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
         <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
-          <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button></div>
+          <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
+          <a class="btn" href="#" id="to-letter">Cover letter</a></div>
         <p class="note" id="ai-note">${ai && !ai_current ? "Your profile or this posting changed since Claude read it. Ask again for a fresh take." : ""}${!j.description ? " Only the search card was captured: open the posting with the extension on for Claude to read the full description." : ""}</p>
       </div>
     </div>
@@ -129,9 +130,14 @@ async function showJob(key) {
           <div class="actions"><button class="btn primary" id="save">Save</button><button class="btn danger" id="del">Delete job</button></div>
         </div>
         <div class="card">
-          <h2>Cover letter</h2>
+          <h2 id="letter-card">Cover letter</h2>
+          <div class="grid2">
+            <label class="f">Based on <select id="letter-resume"><option value="">The best match (Claude picks)</option>${S.profile.resumes.map((r) => `<option ${j.cover_letter && j.cover_letter.resume === r.name ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
+            <label class="f">Tone <select id="letter-tone"><option value="standard">Professional</option><option value="warm">Warm</option><option value="concise">Short and direct</option></select></label>
+          </div>
           <label class="f">Anything to mention? <small>Optional: a referral, why this company, what to emphasise</small><textarea id="letter-notes" style="min-height:70px"></textarea></label>
-          <div class="actions"><button class="btn" id="letter">${j.cover_letter ? "Write another" : "Write a cover letter"}</button>${j.cover_letter ? `<button class="btn" id="copy-letter">Copy</button>` : ""}</div>
+          <div class="actions"><button class="btn primary" id="letter">${j.cover_letter ? "Write another" : "Write a cover letter"}</button>${j.cover_letter ? `<button class="btn" id="copy-letter">Copy</button><button class="btn" id="dl-letter">Download</button>` : ""}</div>
+          <p class="note">Written only from what your résumés and About Me show. Read it over before you send it.</p>
           ${j.cover_letter ? `<div class="letter card" style="margin-top:12px">${esc(j.cover_letter.text)}</div>` : ""}
         </div>
       </div>
@@ -161,11 +167,20 @@ async function showJob(key) {
     const btn = e.target;
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span>Writing…`;
-    try { await api(`/api/jobs/${encodeURIComponent(key)}/cover-letter`, { notes: $("#letter-notes").value }); await showJob(key); }
+    try { await api(`/api/jobs/${encodeURIComponent(key)}/cover-letter`, { notes: $("#letter-notes").value, resume: $("#letter-resume").value, tone: $("#letter-tone").value }); await showJob(key); }
     catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Write a cover letter"; }
   });
   const copy = $("#copy-letter");
   if (copy) copy.addEventListener("click", async () => { await navigator.clipboard.writeText(j.cover_letter.text); toast("Copied."); });
+  $("#to-letter").addEventListener("click", (e) => { e.preventDefault(); $("#letter-card").scrollIntoView({ behavior: "smooth" }); $("#letter-notes").focus({ preventScroll: true }); });
+  const dl = $("#dl-letter");
+  if (dl) dl.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([j.cover_letter.text], { type: "text/plain" }));
+    a.download = `Cover letter - ${j.company || "job"} - ${j.title || ""}`.replace(/[\\/:*?"<>|]+/g, "").slice(0, 110) + ".txt";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
 }
 function aiHtml(ai) {
   const conf = { high: "High", medium: "Medium", low: "Low: the résumé or posting is too thin to judge well" }[ai.confidence] || "";
@@ -176,6 +191,7 @@ function aiHtml(ai) {
     <h3>Gaps</h3>${list(ai.gaps, (x) => `<span class="sev ${esc(x.severity)}">${esc(x.severity)}</span><b>${esc(x.requirement)}</b>. ${esc(x.how_to_address)}`)}
     ${ai.preference_conflicts && ai.preference_conflicts.length ? `<h3>Conflicts with what you want</h3>${list(ai.preference_conflicts)}` : ""}
     ${ai.red_flags && ai.red_flags.length ? `<h3>Red flags</h3>${list(ai.red_flags)}` : ""}
+    ${ai.best_resume ? `<h3>Résumé to send</h3><p>${esc(ai.best_resume)}</p>` : ""}
     <h3>Résumé tips</h3>${list(ai.resume_tips)}
     ${ai.tailored_bullets && ai.tailored_bullets.length ? `<h3>Bullets tailored to this job</h3>${list(ai.tailored_bullets)}` : ""}
     ${ai.keywords && ai.keywords.length ? `<h3>Keywords to include (if true)</h3><div>${ai.keywords.map((k) => `<span class="tag">${esc(k)}</span>`).join("")}</div>` : ""}
@@ -208,11 +224,22 @@ function showProfile() {
   view.innerHTML = `<h1>Your profile</h1>
     <p class="lede">Everything here stays on this computer. The quick scores use your preferences; Claude reads all of it, including your résumé and About Me, when it judges a posting.</p>
     <form id="pf">
+          <div class="card"><h2>1. Your résumés</h2>
+            <p class="note">Start here. Upload or paste your résumé and Claude suggests job titles and skills from it; you can change them and add your own below. Add every version you use (say, one for analyst roles and one for operations). Claude reads them all as evidence of what you've done, and tells you which one to send for each job.</p>
+            <div id="resumes"></div>
+            <div class="actions" style="margin:0 0 10px"><button class="btn small" type="button" id="add-resume">+ Paste another</button>
+              <label class="btn small" tabindex="0">Upload PDF, Word or text<input type="file" id="resume-file" accept=".pdf,.docx,.txt,.md" multiple hidden></label>
+              <button class="btn small" type="button" id="suggest" ${S.ai.backend ? "" : "disabled"}>Suggest job titles and skills from them</button></div>
+            <p class="note" id="resume-note">${S.ai.backend ? "PDFs are read by Claude on your subscription." : "Word and text files are read here. PDFs need Claude set up; or paste the text."}</p>
+          </div>
       <div class="grid2">
-        <div class="card"><h2>What you're looking for</h2>
-          <label class="f">Job titles you want <small>One per line, e.g. Data Analyst</small><textarea name="target_titles" style="min-height:90px">${esc(p.target_titles.join("\n"))}</textarea></label>
+        <div class="card"><h2>2. What you're looking for</h2>
+          <label class="f">Job titles you want <small>Suggested from your résumés; add your own, one per line</small><textarea name="target_titles" style="min-height:90px">${esc(p.target_titles.join("\n"))}</textarea></label>
           <label class="f">Your skills <small>Comma or line separated: tools, certifications, specialties</small><textarea name="skills" style="min-height:90px">${esc(p.skills.join(", "))}</textarea></label>
-          <label class="f">Locations <small>Cities you'd work in, one per line, e.g. Raleigh, NC</small><textarea name="locations" style="min-height:70px">${esc(p.locations.join("\n"))}</textarea></label>
+          <div class="f"><label for="place-q">Locations</label> <small class="note">Start typing a city or state and pick it. A state covers every job in it.</small>
+            <div class="chips" id="places"></div>
+            <div class="picker"><input id="place-q" autocomplete="off" placeholder="e.g. Raleigh or North Carolina" role="combobox" aria-expanded="false" aria-controls="place-list" aria-autocomplete="list">
+              <ul id="place-list" role="listbox" hidden></ul></div></div>
           <label class="f">Work arrangement ${checks("remote", c.remote, p.remote)}</label>
           <label class="f">Job type ${checks("job_types", c.job_types, p.job_types)}</label>
           <label class="f">Level <small>Leave all unticked for any</small>${checks("seniority", c.seniority, p.seniority)}</label>
@@ -224,15 +251,9 @@ function showProfile() {
           <label class="f">Dealbreakers, in your words <small>For Claude: e.g. no night shifts, under 25% travel, need visa sponsorship</small><textarea name="dealbreakers" style="min-height:70px">${esc(p.dealbreakers)}</textarea></label>
         </div>
         <div>
-          <div class="card"><h2>About me</h2>
+          <div class="card"><h2>3. About me</h2>
             <label class="f">Name <small>Used on cover letters</small><input name="name" value="${esc(p.name)}"></label>
             <label class="f">About me <small>Who you are, what you want next, what you're good at, what matters to you in a job. The more Claude knows, the better its advice.</small><textarea name="about_me" style="min-height:180px">${esc(p.about_me)}</textarea></label>
-          </div>
-          <div class="card"><h2>Résumé</h2>
-            <div class="actions" style="margin:0 0 10px"><label class="btn small">Upload PDF, Word or text<input type="file" id="resume-file" accept=".pdf,.docx,.txt,.md" hidden></label>
-              <button class="btn small" type="button" id="suggest" ${S.ai.backend ? "" : "disabled"}>Suggest titles and skills from it</button></div>
-            <p class="note" id="resume-note">${S.ai.backend ? "PDFs are read by Claude on your subscription." : "Word and text files are read here. PDFs need Claude set up; or paste the text."}</p>
-            <textarea name="resume" style="min-height:260px" placeholder="Paste your résumé here">${esc(p.resume)}</textarea>
           </div>
         </div>
       </div>
@@ -242,8 +263,10 @@ function showProfile() {
   const collect = () => {
     const fd = new FormData(f);
     const out = {};
-    for (const k of ["name", "about_me", "resume", "dealbreakers", "min_salary", "years_experience"]) out[k] = fd.get(k);
-    for (const k of ["target_titles", "skills", "locations", "avoid_keywords"]) out[k] = fd.get(k);
+    for (const k of ["name", "about_me", "dealbreakers", "min_salary", "years_experience"]) out[k] = fd.get(k);
+    out.resumes = resumes();
+    for (const k of ["target_titles", "skills", "avoid_keywords"]) out[k] = fd.get(k);
+    out.locations = chosenPlaces;
     for (const k of ["remote", "job_types", "seniority"]) out[k] = fd.getAll(k);
     out.max_age_days = S.profile.max_age_days;
     return out;
@@ -256,24 +279,93 @@ function showProfile() {
       toast(`Saved. ${out.counts.total} jobs rescored.`);
     } catch (err) { toast(err.message); }
   });
+  // locations: chips, added from a type-ahead list of real places (typing your own and pressing Enter works too)
+  let chosenPlaces = [...p.locations];
+  const chips = $("#places"), q = $("#place-q"), listEl = $("#place-list");
+  let options = [], active = -1, seq = 0;
+  function drawChips() {
+    chips.innerHTML = chosenPlaces.map((x, i) => `<span class="chip">${esc(x)}<button type="button" data-i="${i}" aria-label="Remove ${esc(x)}">×</button></span>`).join("");
+    chips.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { chosenPlaces.splice(+b.dataset.i, 1); drawChips(); }));
+  }
+  function drawOptions() {
+    listEl.hidden = !options.length;
+    q.setAttribute("aria-expanded", String(!!options.length));
+    listEl.innerHTML = options.map((x, i) => `<li role="option" id="place-${i}" aria-selected="${i === active}" class="${i === active ? "on" : ""}">${esc(x)}</li>`).join("");
+    listEl.querySelectorAll("li").forEach((li, i) => li.addEventListener("mousedown", (e) => { e.preventDefault(); pick(options[i]); }));
+    if (active >= 0) q.setAttribute("aria-activedescendant", `place-${active}`); else q.removeAttribute("aria-activedescendant");
+  }
+  function pick(place) {
+    place = place.trim();
+    if (place && !chosenPlaces.some((x) => x.toLowerCase() === place.toLowerCase())) chosenPlaces.push(place);
+    q.value = ""; options = []; active = -1;
+    drawChips(); drawOptions();
+  }
+  let t;
+  q.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      const mine = ++seq;
+      const out = q.value.trim().length >= 2 ? await api("/api/places?q=" + encodeURIComponent(q.value)).catch(() => ({ places: [] })) : { places: [] };
+      if (mine !== seq) return;
+      options = out.places; active = options.length ? 0 : -1;
+      drawOptions();
+    }, 150);
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" && options.length) { e.preventDefault(); active = (active + 1) % options.length; drawOptions(); }
+    else if (e.key === "ArrowUp" && options.length) { e.preventDefault(); active = (active - 1 + options.length) % options.length; drawOptions(); }
+    else if (e.key === "Enter") { e.preventDefault(); if (active >= 0) pick(options[active]); else if (q.value.trim()) pick(q.value); }
+    else if (e.key === "Escape") { options = []; drawOptions(); }
+    else if (e.key === "Backspace" && !q.value && chosenPlaces.length) { chosenPlaces.pop(); drawChips(); }
+  });
+  q.addEventListener("blur", () => setTimeout(() => { options = []; drawOptions(); }, 100));
+  drawChips();
+
+  const box = $("#resumes");
+  function addResume(name = "", text = "") {
+    const n = box.children.length + 1;
+    const el = document.createElement("div");
+    el.className = "resume";
+    el.innerHTML = `<div class="resume-head"><input class="r-name" placeholder="Name, e.g. Data analyst" aria-label="Résumé name">
+      <button class="btn small danger" type="button">Remove</button></div>
+      <textarea class="r-text" style="min-height:200px" placeholder="Paste a résumé here"></textarea>`;
+    el.querySelector(".r-name").value = name || (n === 1 ? "Main résumé" : `Résumé ${n}`);
+    el.querySelector(".r-text").value = text;
+    el.querySelector("button").addEventListener("click", () => { el.remove(); if (!box.children.length) addResume(); });
+    box.appendChild(el);
+    return el;
+  }
+  const resumes = () => [...box.querySelectorAll(".resume")].map((el) => ({ name: el.querySelector(".r-name").value.trim(), text: el.querySelector(".r-text").value.trim() })).filter((r) => r.text);
+  (p.resumes.length ? p.resumes : [{}]).forEach((r) => addResume(r.name, r.text));
+  $("#add-resume").addEventListener("click", () => addResume().querySelector(".r-name").select());
   $("#resume-file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
     const note = $("#resume-note");
-    note.innerHTML = `<span class="spinner"></span>Reading ${esc(file.name)}…`;
-    const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(file); });
-    try {
-      const out = await api("/api/profile/resume-file", { filename: file.name, data });
-      f.resume.value = out.resume_text;
-      applySuggestions(out);
-      note.textContent = "Read. Check it over, then Save profile.";
-    } catch (err) { note.textContent = err.message; }
+    for (const file of e.target.files) {
+      note.innerHTML = `<span class="spinner"></span>Reading ${esc(file.name)}…`;
+      const data = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.readAsDataURL(file); });
+      try {
+        const out = await api("/api/profile/resume-file", { filename: file.name, data });
+        // fill the first empty slot, else add one, named after the file
+        const empty = [...box.querySelectorAll(".resume")].find((el) => !el.querySelector(".r-text").value.trim());
+        const el = empty || addResume();
+        el.querySelector(".r-name").value = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+        el.querySelector(".r-text").value = out.resume_text;
+        if (!out.titles && S.ai.backend) {
+          note.innerHTML = `<span class="spinner"></span>Claude is suggesting job titles…`;
+          try { Object.assign(out, await api("/api/profile/suggest", { resume: out.resume_text })); } catch (_) { /* suggestions are optional */ }
+        }
+        applySuggestions(out);
+        note.textContent = out.titles ? "Read, and suggested titles and skills added below. Check them over, then Save profile." : "Read. Check it over, then Save profile.";
+      } catch (err) { note.textContent = `${file.name}: ${err.message}`; }
+    }
+    e.target.value = "";
   });
   $("#suggest").addEventListener("click", async (e) => {
     e.target.disabled = true;
     const note = $("#resume-note");
-    note.innerHTML = `<span class="spinner"></span>Claude is reading your résumé…`;
-    try { applySuggestions(await api("/api/profile/suggest", { resume: f.resume.value })); note.textContent = "Added suggestions. Edit them, then Save profile."; }
+    note.innerHTML = `<span class="spinner"></span>Claude is reading your résumés…`;
+    const text = resumes().map((r) => `# ${r.name}\n${r.text}`).join("\n\n");
+    try { applySuggestions(await api("/api/profile/suggest", { resume: text })); note.textContent = "Added suggestions. Edit them, then Save profile."; }
     catch (err) { note.textContent = err.message; }
     e.target.disabled = false;
   });

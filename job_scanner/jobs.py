@@ -145,10 +145,10 @@ class Ledger:
             self.save()
             return rec
 
-    def set_letter(self, key: str, letter: str) -> dict:
+    def set_letter(self, key: str, letter: str, resume: str = "") -> dict:
         with _lock:
             rec = self.jobs[key]
-            rec["cover_letter"] = {"text": letter, "at": now_iso()}
+            rec["cover_letter"] = {"text": letter, "at": now_iso(), "resume": resume}
             self.save()
             return rec
 

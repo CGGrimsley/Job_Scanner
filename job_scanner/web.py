@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, ai, jobs, profile, resume, store
+from . import __version__, ai, jobs, places, profile, resume, store
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -99,6 +99,19 @@ def make_handler(ledger: jobs.Ledger):
             out = ai.analyze_job(rec, profile.for_prompt(p))
             rec = ledger.set_analysis(key, out, fp)
         return {"job": jobs.public(rec), "mark": jobs.mark_for(rec)}
+
+    def write_letter(key: str, data: dict) -> dict:
+        rec = ledger.get(key)
+        if rec is None:
+            raise KeyError(key)
+        p = current_profile()
+        if not p["resumes"]:
+            raise BadRequest("Add a résumé on your Profile first: the letter is written from it.")
+        name = str(data.get("resume") or "")
+        if name and name not in {r["name"] for r in p["resumes"]}:
+            raise BadRequest("No résumé by that name.")
+        letter = ai.cover_letter(rec, profile.for_prompt(p), str(data.get("notes") or ""), name, str(data.get("tone") or "standard"))
+        return ledger.set_letter(key, letter, name)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"JobScanner/{__version__}"
@@ -240,6 +253,8 @@ def make_handler(ledger: jobs.Ledger):
                     raise KeyError(path)
                 return self._json({"job": jobs.public(rec),
                                    "ai_current": jobs.ai_current(rec, profile.fingerprint(current_profile()))})
+            if path == "/api/places":
+                return self._json({"places": places.search(q.get("q", ""))})
             if path == "/api/ai/usage":
                 return self._json(ai.usage_summary())
             if path.startswith("/api/"):
@@ -264,6 +279,9 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/analyze":
                     key = f"{data.get('source', '')}:{data.get('id', '')}"
                     return self._json(analyze(key, force=bool(data.get("force")), auto=bool(data.get("auto"))))
+                if path == "/api/capture/cover-letter":
+                    rec = write_letter(f"{data.get('source', '')}:{data.get('id', '')}", data)
+                    return self._json({"letter": rec["cover_letter"]["text"]})
                 if path == "/api/capture/status":
                     key = f"{data.get('source', '')}:{data.get('id', '')}"
                     rec = ledger.update(key, {"status": data.get("status", "")})
@@ -284,7 +302,7 @@ def make_handler(ledger: jobs.Ledger):
                     raise BadRequest("The file didn't upload properly.") from None
                 return self._json(resume.read(str(data.get("filename") or ""), blob))
             if path == "/api/profile/suggest":
-                text = str(data.get("resume") or current_profile()["resume"])
+                text = str(data.get("resume") or profile.all_resume_text(current_profile()))
                 if len(text) < 100:
                     raise BadRequest("Add your résumé first.")
                 return self._json(ai.suggest_from_text(text))
@@ -312,13 +330,7 @@ def make_handler(ledger: jobs.Ledger):
                 if action == "analyze":
                     return self._json(analyze(key, force=bool(data.get("force"))))
                 if action == "cover-letter":
-                    rec = ledger.get(key)
-                    if rec is None:
-                        raise KeyError(key)
-                    if profile.is_empty(current_profile()):
-                        raise BadRequest("Fill in your Profile first.")
-                    letter = ai.cover_letter(rec, profile.for_prompt(current_profile()), str(data.get("notes") or ""))
-                    return self._json({"job": jobs.public(ledger.set_letter(key, letter))})
+                    return self._json({"job": jobs.public(write_letter(key, data))})
                 if action == "update":
                     return self._json({"job": jobs.public(ledger.update(key, data))})
                 if action == "delete":
