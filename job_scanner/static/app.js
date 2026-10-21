@@ -38,6 +38,7 @@ async function route() {
   try {
     if (name === "job") return await showJob(rest.join("/"));
     if (name === "tracker") return await showTracker();
+    if (name === "insights") return await showInsights();
     if (name === "profile") return showProfile();
     if (name === "setup") return await showSetup();
     return await showJobs();
@@ -58,10 +59,20 @@ function jobRow(j) {
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
+}
+const WARN_LABEL = { scam: "Possible scam", ghost: "May not be a live opening", caution: "Worth checking", info: "Good to know" };
+function warnTag(ws) {
+  const top = (ws || []).find((w) => w.level === "scam" || w.level === "ghost");
+  return top ? `<span class="tag warn-${top.level}" title="${esc(top.text)}">⚠ ${WARN_LABEL[top.level]}</span>` : "";
+}
+function warningsHtml(ws) {
+  if (!ws || !ws.length) return "";
+  return `<div class="card warnings"><h2>Warning signs</h2><p class="note">Found in the posting itself. They're reasons to look closer, not a verdict.</p>
+    <ul class="clean">${ws.map((w) => `<li class="warn-${w.level}"><b>${WARN_LABEL[w.level]}:</b> ${esc(w.text)}</li>`).join("")}</ul></div>`;
 }
 function bindRows(root) {
   root.querySelectorAll(".job").forEach((el) => el.addEventListener("click", () => (location.hash = "job/" + encodeURIComponent(el.dataset.key))));
@@ -98,7 +109,7 @@ async function showJobs() {
 /* ---------- one job ---------- */
 const list = (items, fn = esc) => items && items.length ? `<ul class="clean">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : `<p class="note">None.</p>`;
 async function showJob(key) {
-  const { job: j, ai_current, todo } = await api("/api/jobs/" + encodeURIComponent(key));
+  const { job: j, ai_current, todo, pay } = await api("/api/jobs/" + encodeURIComponent(key));
   const b = j.best, r = j.rules || {}, ai = j.ai;
   const statusOpts = S.statuses.map((s) => `<option value="${s}" ${s === (j.status || "") ? "selected" : ""}>${STATUS_LABEL[s]}</option>`).join("");
   view.innerHTML = `
@@ -113,14 +124,17 @@ async function showJob(key) {
           <button class="btn primary" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
           <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
           <a class="btn" href="#" id="to-tailor">Tailored résumé</a><a class="btn" href="#" id="to-letter">Cover letter</a></div>
+        ${(j.also_on || []).length ? `<p class="note">Also posted on ${j.also_on.map((o) => `<a href="#job/${encodeURIComponent(o.key)}">${esc(o.source)}</a>${o.status ? ` (${esc(STATUS_LABEL[o.status])})` : ""}`).join(", ")}. They're shown as one job.</p>` : ""}
+        ${j.status_elsewhere ? `<p class="note"><b>You've marked this job ${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}.</b></p>` : ""}
         <p class="note" id="ai-note">${ai && !ai_current ? "Your profile or this posting changed since Claude read it. Ask again for a fresh take." : ""}${!j.description ? " Only the search card was captured: open the posting with the extension on for Claude to read the full description." : ""}</p>
       </div>
     </div>
+    ${warningsHtml(j.warnings)}
     ${j.packet || j.answers ? packetHtml(key, j) : ""}
     <div class="grid2">
       <div>
         <div class="card" id="ai-card">${ai ? aiHtml(ai) : `<h2>Claude's take</h2><p class="note">${S.ai.backend ? "Not asked yet. Click Ask Claude to get a fit score, your strengths and gaps for this role, red flags and résumé tips." : "Set up Claude on the Setup page to get a full analysis on your Claude subscription."}</p>`}</div>
-        <div class="card"><h2>Quick match: ${r.score} (${r.verdict})</h2><p class="note">How well the posting matches your stated preferences. It doesn't judge your chances; Claude's take does.</p><h3>Good</h3>${list(r.reasons)}<h3>Watch out</h3>${list(r.cautions)}</div>
+        <div class="card"><h2>Quick match: ${r.score} (${r.verdict})</h2><p class="note">How well the posting matches your stated preferences. It doesn't judge your chances; Claude's take does.</p><h3>Good</h3>${list(r.reasons)}<h3>Watch out</h3>${list(r.cautions)}${payHtml(pay)}</div>
       </div>
       <div>
         <div class="card">
@@ -211,6 +225,50 @@ async function showJob(key) {
   if (copyResume) copyResume.addEventListener("click", async () => { await navigator.clipboard.writeText(j.tailored.text); toast("Copied."); });
   $("#to-letter").addEventListener("click", (e) => { e.preventDefault(); $("#letter-card").scrollIntoView({ behavior: "smooth" }); $("#letter-notes").focus({ preventScroll: true }); });
 }
+function payHtml(p) {
+  if (!p || !p.n) return "";
+  if (!p.enough) return `<h3>Pay compared</h3><p class="note">Only ${p.n} similar posting${p.n === 1 ? "" : "s"} with pay so far, too few to compare.</p>`;
+  return `<h3>Pay compared</h3><p>Pays more than ${p.percentile}% of ${p.n} similar postings you've seen (typical ${money(p.low)}–${money(p.high)}, median ${money(p.median)}).</p>`;
+}
+
+/* ---------- insights ---------- */
+async function showInsights() {
+  const d = await api("/api/insights");
+  const a = d.accuracy, sk = d.skills, pay = d.pay;
+  const rate = (r) => r.decided ? `${r.rate}%${r.enough ? "" : " <small>(few)</small>"}` : "–";
+  const band = (q) => q && q.n ? `${money(q.low)}–${money(q.high)} <small>median ${money(q.median)}, ${q.n} posting${q.n === 1 ? "" : "s"}${q.n < pay.min_sample ? ", too few to rely on" : ""}</small>` : `<span class="note">none listed yet</span>`;
+  view.innerHTML = `<h1>Insights</h1><p class="lede">What all your jobs say together, counted from your own Job Scanner. Small numbers are labelled as small.</p>
+    <div class="card"><h2>This week</h2><p>${d.week.new_matches} new strong match${d.week.new_matches === 1 ? "" : "es"} you haven't acted on · ${d.week.applied} application${d.week.applied === 1 ? "" : "s"} sent</p></div>
+    <div class="card"><h2>Are the ratings right?</h2>
+      <p>${esc(a.note)}</p>
+      <table class="tbl"><thead><tr><th>Rated when you applied</th><th>Applied</th><th>Interviews</th><th>Rejected</th><th>No reply</th><th>Waiting</th><th>Interview rate</th></tr></thead>
+      <tbody>${a.rows.map((r) => `<tr><td><span class="score-chip ${r.verdict}">${r.verdict}</span></td><td>${r.applied}</td><td>${r.interview}</td><td>${r.rejected}</td><td>${r.no_reply}</td><td>${r.waiting}</td><td>${rate(r)}</td></tr>`).join("")}</tbody></table>
+      <p class="note">Mark jobs Applied, Interviewing and Rejected on their pages (or the panel) and this fills in. A job is counted under the rating it had on the day you applied.</p></div>
+    <div class="card"><h2>Skills your jobs keep asking for</h2>
+      ${sk.jobs ? `<p class="note">From Claude's reads of the ${sk.jobs} job${sk.jobs === 1 ? "" : "s"} you're tracking or it rated Apply or Consider.</p>` : `<p class="note">Have Claude read a few jobs you'd consider and this fills in.</p>`}
+      ${sk.gaps.length ? `<h3>Gaps Claude found</h3><table class="tbl"><thead><tr><th>Requirement</th><th>Jobs</th><th>How serious</th></tr></thead><tbody>${sk.gaps.map((g) => `<tr><td>${esc(g.requirement)}</td><td>${g.jobs}</td><td>${Object.entries(g.severity).map(([k, v]) => `<span class="sev ${esc(k)}">${esc(k)}${v > 1 ? " ×" + v : ""}</span>`).join(" ")}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${sk.missing_keywords.length ? `<h3>Terms in those postings that none of your résumés use</h3><div>${sk.missing_keywords.map((m) => `<span class="tag" title="${m.on_skills_list ? "On your skills list, but no résumé shows it" : ""}">${esc(m.term)} · ${m.jobs}${m.on_skills_list ? " ✱" : ""}</span>`).join("")}</div><p class="note">✱ on your skills list but no résumé shows it. If you've really done it, add the evidence to a résumé.</p>` : ""}
+      <div class="actions"><button class="btn primary" id="plan" ${S.ai.backend && (sk.gaps.length || sk.missing_keywords.length) ? "" : "disabled"}>${d.plan ? "Make a new plan" : "Ask Claude for a realistic plan"}</button></div>
+      <div id="plan-out">${d.plan ? planHtml(d.plan) : ""}</div></div>
+    <div class="card"><h2>What your target jobs pay</h2>
+      <p class="note">From the ${pay.listed} of ${pay.total} postings you've seen that list pay, as yearly figures (hourly × 2,080). The range is the middle half of postings.</p>
+      ${pay.titles.length ? `<table class="tbl"><thead><tr><th>Title</th>${pay.titles[0].near ? "<th>In your locations or remote</th>" : ""}<th>Everywhere you've looked</th></tr></thead>
+        <tbody>${pay.titles.map((t) => `<tr><td>${esc(t.title)}</td>${t.near ? `<td>${band(t.near)}</td>` : ""}<td>${band(t.everywhere)}</td></tr>`).join("")}</tbody></table>` : `<p class="note">Add the job titles you want on your Profile.</p>`}</div>`;
+  $("#plan").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    e.target.innerHTML = `<span class="spinner"></span>Claude is reading your gaps…`;
+    try { const { plan } = await api("/api/insights/plan", {}); $("#plan-out").innerHTML = planHtml(plan); e.target.textContent = "Make a new plan"; }
+    catch (err) { toast(err.message); e.target.textContent = "Ask Claude for a realistic plan"; }
+    e.target.disabled = false;
+  });
+}
+function planHtml(p) {
+  const EFFORT = { quick: "Quick", weeks: "Weeks", months: "Months", "needs experience": "Needs on-the-job experience" };
+  return `<h3>Claude's plan</h3><p>${esc(p.summary)}</p><ol class="answers">${(p.themes || []).map((t) => `<li><b>${esc(t.skill)}</b> <span class="tag">${esc(EFFORT[t.effort] || t.effort)}</span> <span class="note">in ${t.jobs} job${t.jobs === 1 ? "" : "s"}</span>
+    ${t.already ? `<div class="note">Already close: ${esc(t.already)}</div>` : ""}<div>${esc(t.next_step)}</div></li>`).join("")}</ol>
+    <p class="note">Made ${esc((p.at || "").slice(0, 10))} from ${p.jobs} jobs.</p>`;
+}
+
 /* ---------- the application packet (Easy apply) ---------- */
 function packetHtml(key, j) {
   const items = (j.answers && j.answers.items) || [];

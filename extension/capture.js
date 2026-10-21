@@ -321,7 +321,9 @@
     el.style.cssText = "position:absolute;top:6px;right:6px;z-index:2;pointer-events:none;";
     const root = el.attachShadow({ mode: "closed" });
     const [ink, bg] = COLORS[mark.verdict] || COLORS.Skip;
-    const label = STATUS[mark.status] ? `${STATUS[mark.status]} · ${mark.score}` : `${mark.by === "ai" ? "✦ " : ""}${mark.verdict} ${mark.score}`;
+    const warn = (mark.warnings || [])[0];
+    const label = (warn ? (warn.level === "scam" ? "⚠ Scam? · " : "⚠ ") : "") +
+      (STATUS[mark.status] ? `${STATUS[mark.status]}${mark.status_via ? " on " + mark.status_via : ""} · ${mark.score}` : `${mark.by === "ai" ? "✦ " : ""}${mark.verdict} ${mark.score}`);
     root.innerHTML = `<span style="display:inline-block;padding:3px 8px;border-radius:999px;border:1px solid ${ink};
       background:${bg};color:${ink};font:600 11px/1.3 system-ui,-apple-system,'Segoe UI',sans-serif;white-space:nowrap;
       box-shadow:0 1px 2px rgba(0,0,0,.12)"></span>`;
@@ -334,7 +336,7 @@
       const m = marks.get(c.id);
       const old = c.el.querySelector(":scope > [data-job-scanner]");
       if (!m) { if (old) old.remove(); continue; }
-      const sig = `${m.verdict}${m.score}${m.status}${m.by}`;
+      const sig = `${m.verdict}${m.score}${m.status}${m.by}${(m.warnings || []).length}`;
       if (!old || old.dataset.sig !== sig) {
         if (old) old.remove();
         if (getComputedStyle(c.el).position === "static") c.el.style.position = "relative";
@@ -372,6 +374,8 @@
       button.primary { background:#0f6b4f; border-color:#0f6b4f; color:#fff; }
       button:disabled { opacity:.6; cursor:default; }
       .note { color:#57606a; font-size:12px; margin-top:8px; }
+      .warn { margin:6px 0; padding:6px 8px; border-radius:8px; background:#fdf3df; color:#6b4500; font-size:12px; }
+      .warn.scam { background:#fde8e8; color:#a40e26; font-weight:600; }
       textarea.letter { width:100%; min-height:220px; margin-top:4px; padding:8px; border:1px solid #d0d7de; border-radius:8px; font:13px/1.45 inherit; resize:vertical; }
     </style>
     <div class="wrap"><div class="card"></div><div class="tag"><span class="dot"></span><span class="txt">Job Scanner · watching</span></div></div>`;
@@ -393,6 +397,9 @@
       if (!data) { card.innerHTML = `<h3>${esc(job.title || "This job")}</h3><p class="sub">Reading the posting…</p>`; return; }
       const j = data.job, m = data.mark, ai = j.ai, r = j.rules || {};
       card.innerHTML = `<h3>${esc(j.title)}</h3><p class="sub">${esc([j.company, j.location].filter(Boolean).join(" · "))}</p>
+        ${(j.warnings || []).filter((w) => w.level !== "info").map((w) => `<p class="warn ${w.level}">⚠ ${esc(w.text)}</p>`).join("")}
+        ${j.status_elsewhere ? `<p class="note">You've marked this job ${esc(STATUS[j.status_elsewhere.status] || j.status_elsewhere.status)} on ${esc(j.status_elsewhere.where)}.</p>` : ""}
+        ${(j.also_on || []).length ? `<p class="sub">Also posted on ${esc(j.also_on.map((o) => o.source).join(", "))}</p>` : ""}
         <span class="score ${m.verdict}">${m.verdict} ${m.score}</span><span class="sub">${m.by === "ai" ? `Claude's assessment${ai.confidence ? ` · ${ai.confidence} confidence` : ""}` : "Match to your preferences, not your chances"}</span>
         ${ai ? `<p>${esc(ai.summary)}</p>${ai.interview_odds ? `<p><b>Realistic odds:</b> ${esc(ai.interview_odds)}</p>` : ""}${list("Strengths", ai.strengths, (x) => x.requirement + ": " + x.evidence)}
           ${list("Gaps", ai.gaps, (x) => `${x.requirement} (${x.severity}). ${x.how_to_address}`)}

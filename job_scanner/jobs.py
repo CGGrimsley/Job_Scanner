@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import scoring, store
+from . import scoring, signals, store
 
 FILE = "jobs.json"
 STATUSES = ("", "saved", "applied", "interviewing", "offer", "rejected", "withdrawn", "dismissed")
@@ -79,10 +79,35 @@ class Ledger:
     def get(self, key: str) -> dict | None:
         return self.jobs.get(key)
 
+    # -- the same job on several sites --
+    def index(self) -> dict:
+        idx = {}
+        for r in self.jobs.values():
+            k = signals.dupe_key(r)
+            if k:
+                idx.setdefault(k, []).append(r)
+        return idx
+
+    def siblings(self, rec: dict, idx: dict | None = None) -> list:
+        """Other records of the same job: same company and title, and not in two different places."""
+        k = signals.dupe_key(rec)
+        if not k:
+            return []
+        group = (idx if idx is not None else self.index()).get(k, [])
+        here = signals.place_of(rec.get("location"))
+        return [r for r in group if r is not rec and r["key"] != rec["key"]
+                and (not here or not signals.place_of(r.get("location")) or signals.place_of(r.get("location")) == here)]
+
+    def public(self, rec: dict, idx: dict | None = None) -> dict:
+        return public(rec, self.siblings(rec, idx))
+
+    def mark(self, rec: dict, idx: dict | None = None) -> dict:
+        return mark_for(rec, siblings=self.siblings(rec, idx))
+
     def add(self, rows: list, profile: dict) -> dict:
         """Merge captured rows in and score them. Returns counts and a mark per row for the page's stamps."""
         added = updated = 0
-        marks, alerts = [], []
+        marks, alerts, touched = [], [], []
         with _lock:
             for raw in rows:
                 row = clean_row(raw)
@@ -101,11 +126,16 @@ class Ledger:
                 before = (rec.get("rules") or {}).get("score")
                 merge(rec, row)
                 rescore(rec, profile)
-                m = mark_for(rec, profile)
+                touched.append((rec, is_new, before))
+            idx = self.index()
+            for rec, is_new, before in touched:
+                m = self.mark(rec, idx)
                 m["new"] = is_new
                 marks.append(m)
                 after = rec["rules"]["score"]
-                if is_new or (before is not None and before < 80 <= after):
+                # one alert per job, not one per site it's posted on
+                dupe = is_new and any(o.get("first_seen", "") < rec["first_seen"] for o in self.siblings(rec, idx))
+                if (is_new and not dupe) or (before is not None and before < 80 <= after):
                     if m["score"] >= 80:
                         alerts.append({"title": rec.get("title"), "company": rec.get("company"), "url": rec.get("url"),
                                        "score": m["score"], "verdict": m["verdict"]})
@@ -126,6 +156,8 @@ class Ledger:
                     rec.setdefault("history", []).append({"at": now_iso(), "status": st})
                     if st == "applied" and not rec.get("applied_at"):
                         rec["applied_at"] = now_iso()[:10]
+                    if st == "applied" and not rec.get("applied_score"):
+                        rec["applied_score"] = best(rec)  # what it was rated when you applied, to check the ratings later
             for k, n in (("notes", 5000), ("contact", 300)):
                 if k in changes:
                     rec[k] = str(changes[k] or "")[:n]
@@ -186,6 +218,8 @@ class Ledger:
     def listing(self, q: dict) -> list:
         """Jobs for the app's list, filtered and sorted. q: source, status, verdict, text, sort."""
         recs = list(self.jobs.values())
+        if not q.get("dupes"):
+            recs = collapse(recs, self.index())
         if q.get("source"):
             recs = [r for r in recs if r["source"] == q["source"]]
         st = q.get("status")
@@ -257,6 +291,30 @@ class Ledger:
         return c
 
 
+def _rank(r: dict) -> tuple:
+    """Which copy of a job to show: the one you're tracking, then the one Claude read, then the fullest."""
+    return (bool(r.get("status") and r["status"] != "dismissed"), bool(r.get("ai")), bool(r.get("description")),
+            r.get("last_seen") or "")
+
+
+def collapse(recs: list, idx: dict) -> list:
+    """One record per job: copies of the same job on other sites are folded into the best one."""
+    out, hidden = [], set()
+    for r in sorted(recs, key=_rank, reverse=True):
+        if r["key"] in hidden:
+            continue
+        out.append(r)
+        k = signals.dupe_key(r)
+        if not k:
+            continue
+        here = signals.place_of(r.get("location"))
+        for o in idx.get(k, []):
+            there = signals.place_of(o.get("location"))
+            if o is not r and (not here or not there or here == there):
+                hidden.add(o["key"])
+    return out
+
+
 def merge(rec: dict, row: dict) -> None:
     """Fold a newly captured row into its record. A full posting's fields win over a card's; a card never wipes
     out a description that was captured from the posting itself."""
@@ -279,13 +337,21 @@ def desc_hash(rec: dict) -> str:
 
 
 def rescore(rec: dict, profile: dict) -> None:
-    rec["rules"] = scoring.score(rec, profile)
+    r = scoring.score(rec, profile)
+    rec["rules"] = r
+    scam = [w["text"] for w in signals.warnings(rec) if w["level"] == "scam"]
+    r["scam"] = bool(scam)
+    if scam:
+        r["cautions"].insert(0, "Signs of a scam: " + scam[0])
+        r["score"], r["verdict"] = min(r["score"], 30), scoring.SKIP
 
 
 def best(rec: dict) -> dict:
     """The score to show: Claude's fit score when there is one, else the rules score."""
     ai = rec.get("ai")
     if ai and isinstance(ai.get("fit_score"), (int, float)):
+        if (rec.get("rules") or {}).get("scam"):  # a good fit on paper is no reason to send your details to a scam
+            return {"score": min(int(ai["fit_score"]), 30), "verdict": scoring.SKIP, "by": "ai"}
         return {"score": int(ai["fit_score"]), "verdict": ai.get("verdict") or scoring.CONSIDER, "by": "ai"}
     r = rec.get("rules") or {"score": 0, "verdict": scoring.SKIP}
     return {"score": r["score"], "verdict": r["verdict"], "by": "rules"}
@@ -296,19 +362,38 @@ def ai_current(rec: dict, profile_fp: str) -> bool:
     return bool(ai) and ai.get("profile") == profile_fp and ai.get("desc") == desc_hash(rec)
 
 
-def mark_for(rec: dict, profile: dict | None = None) -> dict:
+def tracked_status(rec: dict, siblings: list) -> tuple:
+    """(status, where): this record's own status, or the one you set on another site's copy of the job."""
+    if rec.get("status"):
+        return rec["status"], ""
+    for o in siblings:
+        if o.get("status") and o["status"] != "dismissed":
+            return o["status"], SOURCES.get(o["source"], o["source"])
+    return "", ""
+
+
+def mark_for(rec: dict, profile: dict | None = None, siblings: list | None = None) -> dict:
     """What the extension needs to stamp a card or fill its panel."""
     b = best(rec)
+    status, via = tracked_status(rec, siblings or [])
+    warn = signals.warnings(rec, siblings)
     r = rec.get("rules") or {}
     ai = rec.get("ai") or {}
     why = ai.get("summary") or "; ".join((r.get("reasons") or [])[:3] + (r.get("cautions") or [])[:2])
     return {"source": rec["source"], "id": rec["id"], "key": rec["key"], "score": b["score"], "verdict": b["verdict"],
-            "by": b["by"], "why": why, "status": rec.get("status") or "", "analyzed": bool(ai),
-            "has_description": bool(rec.get("description"))}
+            "by": b["by"], "why": why, "status": status, "status_via": via, "analyzed": bool(ai),
+            "has_description": bool(rec.get("description")),
+            "warnings": [w for w in warn if w["level"] in ("scam", "ghost")][:3]}
 
 
-def public(rec: dict) -> dict:
+def public(rec: dict, siblings: list | None = None) -> dict:
     out = dict(rec)
     out["best"] = best(rec)
     out["source_name"] = SOURCES.get(rec["source"], rec["source"])
+    out["warnings"] = signals.warnings(rec, siblings)
+    out["also_on"] = [{"key": o["key"], "source": SOURCES.get(o["source"], o["source"]), "url": o.get("url") or "",
+                       "status": o.get("status") or "", "title": o.get("title") or ""} for o in siblings or []]
+    st, via = tracked_status(rec, siblings or [])
+    if via:
+        out["status_elsewhere"] = {"status": st, "where": via}
     return out
