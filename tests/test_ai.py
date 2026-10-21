@@ -101,3 +101,16 @@ def test_answers_never_cover_personal_questions(monkeypatch):
     assert "- Why us?" in asked["prompt"] and "protected veteran" not in asked["prompt"]
     assert out[0] == {"question": "What is your gender?", "answer": "", "basis": "guess"}
     assert ai.answer_questions({"title": "x"}, "r", "", ["Race / ethnicity"]) == []
+
+
+def test_about_me_draft_comes_from_the_resumes(monkeypatch):
+    seen = {}
+
+    def fake(system, prompt, schema, kind="other", **kw):
+        seen.update(prompt=prompt, kind=kind)
+        return {"about_me": "  I'm an operations coordinator with 3 years in logistics.  ", "to_add": ["What do you want next?", " "]}
+    monkeypatch.setattr(ai, "ask_json", fake)
+    out = ai.draft_about_me("Operations Coordinator, 2021-2024", "I want remote work.", ["Operations Analyst"])
+    assert out == {"about_me": "I'm an operations coordinator with 3 years in logistics.", "to_add": ["What do you want next?"]}
+    assert seen["kind"] == "about_me"
+    assert "<resumes>" in seen["prompt"] and "I want remote work." in seen["prompt"] and "Operations Analyst" in seen["prompt"]

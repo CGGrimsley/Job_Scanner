@@ -473,6 +473,8 @@ function showProfile() {
           <div class="card"><h2>3. About me</h2>
             <label class="f">Name <small>Used on cover letters</small><input name="name" value="${esc(p.name)}"></label>
             <label class="f">About me <small>Who you are, what you want next, what you're good at, what matters to you in a job. The more Claude knows, the better its advice.</small><textarea name="about_me" style="min-height:180px">${esc(p.about_me)}</textarea></label>
+            <div class="actions" style="margin-top:0"><button class="btn small" type="button" id="draft-about" ${S.ai.backend ? "" : "disabled"}>${p.about_me ? "Redraft from my résumés" : "Draft it from my résumés"}</button></div>
+            <div class="note" id="about-note">${S.ai.backend ? "Claude writes a first draft from your résumés. Edit it however you like, then Save profile." : "Set up Claude to draft this from your résumés."}</div>
           </div>
         </div>
       </div>
@@ -582,10 +584,31 @@ function showProfile() {
         }
         applySuggestions(out);
         note.textContent = out.titles ? "Read, and suggested titles and skills added below. Check them over, then Save profile." : "Read. Check it over, then Save profile.";
+        if (S.ai.backend && !f.about_me.value.trim()) draftAbout(false); // nothing written yet: start them off
       } catch (err) { note.textContent = `${file.name}: ${err.message}`; }
     }
     e.target.value = "";
   });
+  async function draftAbout(ask) {
+    const btn = $("#draft-about"), note = $("#about-note"), box = f.about_me;
+    const text = resumes().map((r) => `# ${r.name}\n${r.text}`).join("\n\n");
+    if (text.length < 100) { note.textContent = "Add or upload a résumé above first."; return; }
+    if (ask && box.value.trim() && !confirm("Replace what's in About me with a new draft? Anything true you wrote that your résumés don't show is kept in the draft.")) return;
+    btn.disabled = true;
+    note.innerHTML = `<span class="spinner"></span>Claude is drafting your About me from your résumés…`;
+    try {
+      const out = await api("/api/profile/about-me", { resume: text, about_me: box.value, titles: f.target_titles.value });
+      box.value = out.about_me;
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      note.innerHTML = `<b>Draft added from your résumés, not saved yet.</b> Edit it in your own voice, then Save profile.`
+        + (out.to_add.length ? `<br>Only you can add: ${out.to_add.map(esc).join(" · ")}` : "")
+        + (out.check.length ? `<br><span class="warn-text">Check these figures against your résumé:</span> ${out.check.map(esc).join(" · ")}` : "");
+      btn.textContent = "Redraft from my résumés";
+      box.focus();
+    } catch (err) { note.textContent = err.message; }
+    btn.disabled = false;
+  }
+  $("#draft-about").addEventListener("click", () => draftAbout(true));
   $("#suggest").addEventListener("click", async (e) => {
     e.target.disabled = true;
     const note = $("#resume-note");

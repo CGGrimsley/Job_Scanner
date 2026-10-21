@@ -193,3 +193,16 @@ def test_models_company_read_and_site_health(server, monkeypatch):
     assert call(server + "/api/capture/health", {"source": "indeed", "what": "posting", "ok": False}, tok)[0] == 200
     _, state = call(server + "/api/state")
     assert state["site_health"]["indeed"]["posting"]["ok"] is False
+
+
+def test_about_me_draft_endpoint(server, monkeypatch):
+    from job_scanner import ai
+    assert call(server + "/api/profile/about-me", {"resume": "too short"})[0] == 400
+    monkeypatch.setattr(ai, "draft_about_me", lambda resumes, current, titles: {
+        "about_me": "Operations coordinator for 3 years; cut costs 40%.", "to_add": ["What do you want next?"]})
+    resume = "Operations Coordinator, Bluth Logistics, 3 years. Built weekly Excel reports for warehouse managers. " * 2
+    status, out = call(server + "/api/profile/about-me", {"resume": resume, "about_me": "", "titles": "Operations Analyst"})
+    assert status == 200 and out["to_add"] == ["What do you want next?"]
+    assert out["check"] == ["Operations coordinator for 3 years; cut costs 40%."]  # 40 isn't in the résumé
+    _, state = call(server + "/api/state")
+    assert state["profile"]["about_me"] == ""  # a draft, not saved until they save the profile

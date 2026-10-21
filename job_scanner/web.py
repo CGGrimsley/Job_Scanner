@@ -524,6 +524,16 @@ def make_handler(ledger: jobs.Ledger):
                 if len(text) < 100:
                     raise BadRequest("Add your résumé first.")
                 return self._json(ai.suggest_from_text(text))
+            if path == "/api/profile/about-me":
+                p = current_profile()
+                text = str(data.get("resume") or profile.all_resume_text(p))
+                if len(text) < 100:
+                    raise BadRequest("Add your résumé first.")
+                current = str(data.get("about_me") if "about_me" in data else p["about_me"])
+                out = ai.draft_about_me(text, current, profile._list(data.get("titles"), lines_only=True) or p["target_titles"])
+                # a figure none of the résumés (or their own words) contain is worth a second look before saving
+                out["check"] = unsupported_numbers(out["about_me"], text + "\n" + current)
+                return self._json(out)
             if path == "/api/settings":
                 changes = {}
                 if "auto_analyze" in data:
