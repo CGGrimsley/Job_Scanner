@@ -101,3 +101,14 @@ def test_answers_never_cover_personal_questions(monkeypatch):
     assert "- Why us?" in asked["prompt"] and "protected veteran" not in asked["prompt"]
     assert out[0] == {"question": "What is your gender?", "answer": "", "basis": "guess"}
     assert ai.answer_questions({"title": "x"}, "r", "", ["Race / ethnicity"]) == []
+
+
+def test_about_me_draft_uses_only_the_resumes(monkeypatch):
+    monkeypatch.setenv("JOB_SCANNER_AI", "cli")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: "/usr/bin/claude")
+    captured = {}
+    monkeypatch.setattr(ai.subprocess, "run", fake_run(captured, {"structured_output": {
+        "about_me": " I'm a data analyst. ", "to_add": ["What next?", "", "a", "b", "c", "d"]}}))
+    out = ai.draft_about_me("Data analyst, SQL", current="I love maps")
+    assert out == {"about_me": "I'm a data analyst.", "to_add": ["What next?", "a", "b", "c"]}
+    assert "<resume>" in captured["input"] and "I love maps" in captured["input"] and "invented" in captured["input"]

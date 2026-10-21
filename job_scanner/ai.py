@@ -675,6 +675,30 @@ def read_resume(filename: str, blob: bytes) -> dict:
     return out
 
 
+ABOUT_SCHEMA = {"type": "object", "properties": {
+    "about_me": {"type": "string"},
+    "to_add": {"type": "array", "items": {"type": "string"},
+               "description": "Up to 4 short questions about things only the person can say (what they want next, what matters to them)."}},
+    "required": ["about_me", "to_add"], "additionalProperties": False}
+
+
+def draft_about_me(resume: str, current: str = "") -> dict:
+    """A first-person About Me drafted from the résumés, for the person to edit. Only what the résumés show; what
+    only they know (what they want next, what matters to them) is left as questions, never guessed."""
+    prompt = ("Draft an 'About me' for this job seeker's profile, from their résumés below. Write it in the first "
+              "person, plainly, in 100 to 180 words: who they are professionally, their main experience and "
+              "strengths, and the kind of work their background points to. Use only what the résumés show: no "
+              "invented achievements, numbers, traits or goals, and no hype words (passionate, results-driven, "
+              "dynamic). Where the résumés differ, cover what they share. Don't claim what they want next or what "
+              "matters to them; list those as short questions in to_add instead."
+              + ("\n\nThey already wrote this. Keep everything it says that the résumés don't contradict, in "
+                 "their words where you can, and fill in around it:\n<current>\n" + current[:4000] + "\n</current>" if current.strip() else "")
+              + "\n\n<resume>\n" + resume[:30000] + "\n</resume>")
+    out = ask_json("You write accurate, plain profile summaries from résumés. " + GUARD, prompt, ABOUT_SCHEMA, kind="about_me")
+    return {"about_me": str(out.get("about_me") or "").strip(),
+            "to_add": [str(q) for q in (out.get("to_add") or []) if str(q).strip()][:4]}
+
+
 def suggest_from_text(resume: str) -> dict:
     prompt = ("From this résumé, suggest skills (up to 25 concrete skills and tools), titles (up to 5 job titles "
               "this person is qualified for next) and years_experience (total professional years, or null). Set "

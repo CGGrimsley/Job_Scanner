@@ -473,6 +473,8 @@ function showProfile() {
           <div class="card"><h2>3. About me</h2>
             <label class="f">Name <small>Used on cover letters</small><input name="name" value="${esc(p.name)}"></label>
             <label class="f">About me <small>Who you are, what you want next, what you're good at, what matters to you in a job. The more Claude knows, the better its advice.</small><textarea name="about_me" style="min-height:180px">${esc(p.about_me)}</textarea></label>
+            <div class="actions" style="margin-top:0"><button class="btn small" type="button" id="about-draft" ${S.ai.backend ? "" : "disabled"} title="Claude writes a draft from your résumés for you to edit">${p.about_me ? "Rework it from my résumés" : "Draft it from my résumés"}</button></div>
+            <div class="note" id="about-note">${S.ai.backend ? "" : "Set up Claude on the Setup page to draft this from your résumés."}</div>
           </div>
         </div>
       </div>
@@ -585,6 +587,25 @@ function showProfile() {
       } catch (err) { note.textContent = `${file.name}: ${err.message}`; }
     }
     e.target.value = "";
+  });
+  $("#about-draft").addEventListener("click", async (e) => {
+    const btn = e.target, box = f.elements.about_me, note = $("#about-note");
+    const text = resumes().map((r) => `# ${r.name}\n${r.text}`).join("\n\n");
+    if (text.length < 100) { note.textContent = "Add a résumé above first: the draft is written from it."; return; }
+    btn.disabled = true;
+    note.innerHTML = `<span class="spinner"></span>Claude is drafting from your résumés…`;
+    try {
+      const out = await api("/api/profile/about-draft", { resume: text, current: box.value });
+      const before = box.value;
+      box.value = out.about_me;
+      box.focus();
+      note.innerHTML = `Drafted from your résumés only. Edit it so it sounds like you, then <b>Save profile</b>.`
+        + (out.to_add.length ? ` Worth adding in your own words:${list(out.to_add)}` : "")
+        + (before.trim() ? ` <a href="#" id="about-undo">Undo</a>` : "");
+      const undo = $("#about-undo");
+      if (undo) undo.addEventListener("click", (ev) => { ev.preventDefault(); box.value = before; note.textContent = "Put back what you had."; });
+    } catch (err) { note.textContent = err.message; }
+    btn.disabled = false;
   });
   $("#suggest").addEventListener("click", async (e) => {
     e.target.disabled = true;

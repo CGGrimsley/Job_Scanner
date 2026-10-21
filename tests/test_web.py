@@ -193,3 +193,13 @@ def test_models_company_read_and_site_health(server, monkeypatch):
     assert call(server + "/api/capture/health", {"source": "indeed", "what": "posting", "ok": False}, tok)[0] == 200
     _, state = call(server + "/api/state")
     assert state["site_health"]["indeed"]["posting"]["ok"] is False
+
+
+def test_about_me_draft(server, monkeypatch):
+    from job_scanner import ai
+    assert call(server + "/api/profile/about-draft", {"resume": "short"})[0] == 400
+    seen = {}
+    monkeypatch.setattr(ai, "draft_about_me", lambda text, current="": seen.update(text=text, current=current) or
+                        {"about_me": "I analyse data.", "to_add": ["What do you want next?"]})
+    status, out = call(server + "/api/profile/about-draft", {"resume": "SQL analyst " * 20, "current": "I like maps."})
+    assert status == 200 and out["about_me"] == "I analyse data." and seen["current"] == "I like maps."

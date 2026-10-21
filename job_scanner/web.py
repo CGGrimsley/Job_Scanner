@@ -524,6 +524,11 @@ def make_handler(ledger: jobs.Ledger):
                 if len(text) < 100:
                     raise BadRequest("Add your résumé first.")
                 return self._json(ai.suggest_from_text(text))
+            if path == "/api/profile/about-draft":
+                text = str(data.get("resume") or profile.all_resume_text(current_profile()))
+                if len(text) < 100:
+                    raise BadRequest("Add a résumé first: the draft is written from it.")
+                return self._json(ai.draft_about_me(text, str(data.get("current") or "")))
             if path == "/api/settings":
                 changes = {}
                 if "auto_analyze" in data:
