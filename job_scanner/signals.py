@@ -34,6 +34,7 @@ SCAM = [
      "Asks for your Social Security or bank details before an offer"),
 ]
 STAFFING = r"\b(on behalf of (our|a) client|our client( is| has|,)|staffing (agency|firm)|recruiting (agency|firm)|contract[- ]to[- ]hire through)\b"
+REPOST_GAP_DAYS = 7
 EVERGREEN = r"\b(always (accepting|hiring|looking)|evergreen|talent (pool|community|pipeline)|future (opportunities|openings)|general application)\b"
 
 
@@ -72,7 +73,12 @@ def warnings(rec: dict, group: list | None = None) -> list:
 
     posted = (rec.get("posted_text") or "").lower()
     age = r.get("age_days")
-    if "repost" in posted:
+    again = relisted([rec] + list(group or []))
+    if again:
+        times = "once" if again["count"] == 1 else f"{again['count']} times"
+        out.append({"code": "reposted", "level": "ghost",
+                    "text": f"Listed again {times} since you first saw it on {again['since']}. Can mean a ghost job or a hard-to-fill role"})
+    elif "repost" in posted:
         out.append({"code": "reposted", "level": "ghost", "text": "Reposted: the same opening has been put up again"})
     if age is not None and age >= 45:
         out.append({"code": "old", "level": "ghost", "text": f"Up for {age} days. Long-open postings are often filled or never real"})
@@ -80,7 +86,7 @@ def warnings(rec: dict, group: list | None = None) -> list:
         out.append({"code": "evergreen", "level": "ghost",
                     "text": "Reads like a talent pool or always-open posting, not a specific opening"})
     span = _seen_span([rec] + list(group or []))
-    if span >= 45 and not any(w["code"] == "old" for w in out):
+    if span >= 45 and not any(w["code"] in ("old", "reposted") for w in out):
         out.append({"code": "lingering", "level": "ghost", "text": f"You've seen this job listed for {span} days"})
 
     state = state_of(rec.get("location") or "")
@@ -95,6 +101,28 @@ def warnings(rec: dict, group: list | None = None) -> list:
     if rec.get("applicants") and rec["applicants"] >= 500:
         out.append({"code": "crowded", "level": "info", "text": f"{rec['applicants']}+ applicants already"})
     return sorted(out, key=lambda w: LEVELS.index(w["level"]))
+
+
+def relisted(recs: list) -> dict | None:
+    """{'count', 'since'} when one job's copies show it was put up again: the same site listing it under a new id a
+    week or more after you first saw it, or its posting date jumping forward (counted in jobs.note_posted)."""
+    from datetime import datetime
+
+    by_source: dict = {}
+    count = 0
+    for r in recs:
+        by_source.setdefault(r.get("source"), []).append(r.get("first_seen") or "")
+        count += int(r.get("reposts") or 0)
+    for seen in by_source.values():
+        seen = sorted(x for x in seen if x)
+        for a, b in zip(seen, seen[1:]):
+            try:
+                count += (datetime.fromisoformat(b) - datetime.fromisoformat(a)).days >= REPOST_GAP_DAYS
+            except ValueError:
+                pass
+    if not count:
+        return None
+    return {"count": count, "since": min((r.get("first_seen") or "" for r in recs if r.get("first_seen")), default="")[:10]}
 
 
 def _seen_span(recs: list) -> int:

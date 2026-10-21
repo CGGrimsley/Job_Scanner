@@ -203,3 +203,21 @@ def test_about_me_draft(server, monkeypatch):
                         {"about_me": "I analyse data.", "to_add": ["What do you want next?"]})
     status, out = call(server + "/api/profile/about-draft", {"resume": "SQL analyst " * 20, "current": "I like maps."})
     assert status == 200 and out["about_me"] == "I analyse data." and seen["current"] == "I like maps."
+
+
+def test_follow_ups_due_for_the_extension(server):
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Analyst", "company": "Acme"}]}, tok)
+    call(server + "/api/jobs/indeed:abc123def456/update", {"status": "applied", "follow_up": "2020-01-01"})
+    assert call(server + "/api/capture/due")[0] == 401
+    status, out = call(server + "/api/capture/due", headers=tok)
+    assert status == 200 and out["count"] >= 1 and out["jobs"][0]["title"] == "Analyst"
+    _, ins = call(server + "/api/insights")
+    assert ins["week"]["due"] and "week" in ins["week"]["usage"]
+
+
+def test_about_me_draft_flags_figures_not_in_the_resumes(server, monkeypatch):
+    from job_scanner import ai
+    monkeypatch.setattr(ai, "draft_about_me", lambda text, current="": {"about_me": "I led 12 people. I cut costs 40%.", "to_add": []})
+    _, out = call(server + "/api/profile/about-draft", {"resume": "Led 12 people at Acme. " * 10})
+    assert out["check"] == ["I cut costs 40%."]

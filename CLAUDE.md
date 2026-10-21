@@ -20,5 +20,8 @@ Chrome extension + local Python app (stdlib only) that scores job postings and g
 - `companies.py`: one light read per employer (`ai.company_read`), cached in `companies.json` for 180 days and passed to the analysis as context. Unknown employers are stored as unknown, never guessed.
 - `facts.py`: years/degree/clearance from the posting, used for Jobs filters and a scoring caution. `health.py`: the extension reports readable/unreadable pages per site (`/api/capture/health`).
 
+- LinkedIn's newer layout (`/jobs/search-results/`) has no stable classes: cards are list items whose markup names exactly one job id (`linkedinListCards`), the posting is the block under "About the job" (`newerItem`). Diagnostics include `structure` (tags, roles, attribute names and counts only) for fixing readers. `schedule()` never waits more than 1.5s, and scroll is listened for in the capture phase (inner scrolling lists).
+- Reposts: `signals.relisted` (same site, new id, a week or more later; or `jobs.note_posted` seeing the posting date jump forward). The extension's daily reminder reads `/api/capture/due` (tracker to-dos marked now). `insights.weekly` is the Insights page's week in review.
+
 ## Tests
 `python -m pytest`
