@@ -15,6 +15,7 @@ try { playwright = createRequire(import.meta.url)("playwright"); } catch (_) {
 const PAGES = [
   ["linkedin.html", "https://www.linkedin.com/jobs/search/?currentJobId=4012345678"],
   ["linkedin-changed.html", "https://www.linkedin.com/jobs/search/?currentJobId=4012345678", 10500], // long enough to warn
+  ["linkedin-new.html", "https://www.linkedin.com/jobs/search-results/?currentJobId=4457298164&keywords=analyst"],
   ["indeed.html", "https://www.indeed.com/jobs?q=data"],
   ["ncworks.html", "https://www.ncworks.gov/vosnet/jobbanks/jobsearch.aspx"],
   ["greenhouse.html", "https://boards.greenhouse.io/acmehealth/jobs/4012345"],

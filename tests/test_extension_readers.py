@@ -55,3 +55,15 @@ def test_a_changed_page_is_reported_not_silently_missed(reads):
     assert by_kind(p, "item") == []
     bad = [h for h in p["health"] if not h["ok"]]
     assert bad and bad[0]["problem"] == "Can't read this posting" and bad[0]["what"] == "posting"
+
+
+def test_linkedin_newer_layout(reads):
+    p = reads["linkedin-new.html"]
+    cards = {c["id"]: c for c in by_kind(p, "card")}
+    assert set(cards) == {"4457298164", "4457311111"}
+    assert cards["4457298164"]["title"] == "Data Analyst" and cards["4457298164"]["company"] == "Acme Health"
+    item = by_kind(p, "item")[0]
+    assert item["id"] == "4457298164" and item["title"] == "Data Analyst" and item["company"] == "Acme Health"
+    assert "Tableau" in item["description"] and not item["description"].startswith("About the job")
+    assert item["location"] == "Raleigh, NC" and item["applicants"] == 100
+    assert p["diag"]["structure"]["items_with_one_id"] == 2 and p["diag"]["structure"]["about_heading"]

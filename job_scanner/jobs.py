@@ -12,7 +12,7 @@ import hashlib
 import io
 import re
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from . import facts, scoring, signals, store
@@ -129,6 +129,7 @@ class Ledger:
                 before = (rec.get("rules") or {}).get("score")
                 merge(rec, row)
                 rescore(rec, profile)
+                note_posted(rec)
                 touched.append((rec, is_new, before))
             idx = self.index()
             for rec, is_new, before in touched:
@@ -339,6 +340,21 @@ def collapse(recs: list, idx: dict) -> list:
             if o is not r and (not here or not there or here == there):
                 hidden.add(o["key"])
     return out
+
+
+def note_posted(rec: dict, today=None) -> None:
+    """Remember the day the site says the job went up. If a later capture puts that a week or more later, the job
+    was reposted under the same id (counted in rec["reposts"], read by signals.relisted)."""
+    age = (rec.get("rules") or {}).get("age_days")
+    if age is None:
+        return
+    today = today or datetime.now(timezone.utc).date()
+    posted = (today - timedelta(days=int(age))).isoformat()
+    was = rec.get("posted_on")
+    if was and (date.fromisoformat(posted) - date.fromisoformat(was)).days >= signals.REPOST_GAP_DAYS:
+        rec["reposts"] = int(rec.get("reposts") or 0) + 1
+    if not was or posted > was:
+        rec["posted_on"] = posted
 
 
 def merge(rec: dict, row: dict) -> None:

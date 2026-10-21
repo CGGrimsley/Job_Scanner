@@ -284,13 +284,28 @@ function payHtml(p) {
 }
 
 /* ---------- insights ---------- */
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+function weekHtml(w) {
+  const job = (j) => `<a href="#job/${encodeURIComponent(j.key)}">${esc(j.title || "?")}</a>${j.company ? ` <span class="note">at ${esc(j.company)}</span>` : ""}`;
+  const section = (title, items, fn) => items && items.length ? `<h3>${title}</h3><ul class="clean">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>` : "";
+  const MOVED = { interviewing: "Interview", offer: "Offer", rejected: "Rejected", withdrawn: "Withdrawn" };
+  const u = (w.usage || {}).week;
+  return `<div class="card"><h2>This week</h2>
+    <p>${plural(w.new_jobs || 0, "new job")} seen · ${plural(w.new_matches, "strong match", "strong matches")} you haven't acted on · ${plural(w.applied, "application")} sent${w.read_by_claude ? ` · ${w.read_by_claude} read by Claude` : ""}</p>
+    ${section("Due now", w.due, (n) => `<b>${esc(n.title)}</b>: <a href="#job/${encodeURIComponent(n.key)}">${esc(n.title_job || "?")}</a>${n.company ? ` <span class="note">at ${esc(n.company)}</span>` : ""}`)}
+    ${section("Moved forward or closed", w.moved, (j) => `<span class="tag">${esc(MOVED[j.status] || j.status)}</span> ${job(j)} <span class="note">${esc(j.at)}</span>`)}
+    ${section("Best new matches you haven't acted on", w.best_unapplied, (j) => `<span class="score-chip ${j.verdict}">${j.score}</span> ${job(j)}`)}
+    ${section("Applications sent", w.sent, job)}
+    ${u ? `<p class="note">Claude this week: ${plural(u.calls, "call")}, ${(u.tokens || 0).toLocaleString()} tokens.</p>` : ""}
+  </div>`;
+}
 async function showInsights() {
   const d = await api("/api/insights");
   const a = d.accuracy, sk = d.skills, pay = d.pay;
   const rate = (r) => r.decided ? `${r.rate}%${r.enough ? "" : " <small>(few)</small>"}` : "–";
   const band = (q) => q && q.n ? `${money(q.low)}–${money(q.high)} <small>median ${money(q.median)}, ${q.n} posting${q.n === 1 ? "" : "s"}${q.n < pay.min_sample ? ", too few to rely on" : ""}</small>` : `<span class="note">none listed yet</span>`;
   view.innerHTML = `<h1>Insights</h1><p class="lede">What all your jobs say together, counted from your own Job Scanner. Small numbers are labelled as small.</p>
-    <div class="card"><h2>This week</h2><p>${d.week.new_matches} new strong match${d.week.new_matches === 1 ? "" : "es"} you haven't acted on · ${d.week.applied} application${d.week.applied === 1 ? "" : "s"} sent</p></div>
+    ${weekHtml(d.week)}
     <div class="card"><h2>Are the ratings right?</h2>
       <p>${esc(a.note)}</p>
       <table class="tbl"><thead><tr><th>Rated when you applied</th><th>Applied</th><th>Interviews</th><th>Rejected</th><th>No reply</th><th>Waiting</th><th>Interview rate</th></tr></thead>
@@ -584,12 +599,14 @@ function showProfile() {
         }
         applySuggestions(out);
         note.textContent = out.titles ? "Read, and suggested titles and skills added below. Check them over, then Save profile." : "Read. Check it over, then Save profile.";
+        if (S.ai.backend && !f.elements.about_me.value.trim()) draftAbout(); // nothing written yet: start them off
       } catch (err) { note.textContent = `${file.name}: ${err.message}`; }
     }
     e.target.value = "";
   });
-  $("#about-draft").addEventListener("click", async (e) => {
-    const btn = e.target, box = f.elements.about_me, note = $("#about-note");
+  async function draftAbout() {
+    const btn = $("#about-draft"), box = f.elements.about_me, note = $("#about-note");
+    if (btn.disabled) return; // already drafting
     const text = resumes().map((r) => `# ${r.name}\n${r.text}`).join("\n\n");
     if (text.length < 100) { note.textContent = "Add a résumé above first: the draft is written from it."; return; }
     btn.disabled = true;
@@ -598,15 +615,17 @@ function showProfile() {
       const out = await api("/api/profile/about-draft", { resume: text, current: box.value });
       const before = box.value;
       box.value = out.about_me;
-      box.focus();
-      note.innerHTML = `Drafted from your résumés only. Edit it so it sounds like you, then <b>Save profile</b>.`
+      note.innerHTML = `<b>Drafted from your résumés only, not saved yet.</b> Edit it so it sounds like you, then <b>Save profile</b>.`
+        + ((out.check || []).length ? `<br><span class="warn-text">These figures aren't in your résumés; check them:</span>${list(out.check)}` : "")
         + (out.to_add.length ? ` Worth adding in your own words:${list(out.to_add)}` : "")
         + (before.trim() ? ` <a href="#" id="about-undo">Undo</a>` : "");
       const undo = $("#about-undo");
       if (undo) undo.addEventListener("click", (ev) => { ev.preventDefault(); box.value = before; note.textContent = "Put back what you had."; });
+      btn.textContent = "Rework it from my résumés";
     } catch (err) { note.textContent = err.message; }
     btn.disabled = false;
-  });
+  }
+  $("#about-draft").addEventListener("click", draftAbout);
   $("#suggest").addEventListener("click", async (e) => {
     e.target.disabled = true;
     const note = $("#resume-note");

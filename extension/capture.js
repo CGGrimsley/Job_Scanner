@@ -91,6 +91,75 @@
     return best.length > 200 ? best : clean(document.body.innerText, 15000);
   }
 
+  // LinkedIn's newer layout (/jobs/search-results/) has no stable classes or data-job-id. A job's id still shows up
+  // in its card's markup (a link, a jobPosting URN, a tracking attribute), so cards are list items that mention
+  // exactly one job id, and the open posting is the block under the "About the job" heading.
+  const LI_JOB_ID = /(?:jobPosting(?:Card)?(?::|%3A|\(|,)+|jobs\/view\/(?:[^/"'?]*-)?|currentJobId(?:=|%3D)|jobId["':=%\s]+)(\d{9,11})/g;
+  function aboutHeading(root = document) {
+    for (const h of root.querySelectorAll("h1, h2, h3, h4, [role=heading]")) if (/^\s*about the job\s*$/i.test(h.textContent || "")) return h;
+    return null;
+  }
+  function linkedinPane() {
+    const h = aboutHeading();
+    if (!h) return null;
+    let el = h;  // climb to the block that also holds the title and company
+    for (let i = 0; i < 12 && el.parentElement && el.parentElement !== document.body; i++) {
+      el = el.parentElement;
+      if (el.querySelector('a[href*="/company/"]') && (el.innerText || "").length > 400) return el;
+    }
+    return h.parentElement;
+  }
+  function newerItem(root) {
+    const h = aboutHeading(root) || aboutHeading();
+    if (!h) return null;
+    // the description: the heading's section, minus the heading itself
+    let sec = h.parentElement;
+    while (sec && sec.parentElement && clean(sec.innerText, 30000).length < 200) sec = sec.parentElement;
+    const description = clean((sec ? sec.innerText : "").replace(/^\s*about the job\s*/i, ""), 30000);
+    if (description.length < 80) return null;
+    const pane = linkedinPane() || root;
+    const companyLink = [...pane.querySelectorAll('a[href*="/company/"]')].find((a) => clean(a.innerText));
+    const company = companyLink ? clean(companyLink.innerText, 200) : "";
+    const head = lines(pane).slice(0, 14);
+    const title = textOf(pane, "h1") || head.find((l) => l !== company && l.length > 3 && l.length < 140 && !/^(promoted|about the job|save|apply|easy apply)$/i.test(l)) || "";
+    const top = head.find((l) => /·/.test(l) && l !== title) || "";
+    const parts = top.split(/\s*·\s*/).filter(Boolean);
+    const all = head.join("\n");
+    return { title: title.replace(/\s+with verification$/i, ""), company, location: parts[0] || "", posted_text: postedText(parts.concat(head)),
+      applicants: applicants(all), pay_text: payText(head), remote: remoteOf(all), job_type: jobType(all), description,
+      easy_apply: /easy apply/i.test(all), closed: /no longer accepting applications/i.test(all) };
+  }
+  function idsIn(el) {
+    const html = el.outerHTML.slice(0, 40000);
+    return new Set([...html.matchAll(LI_JOB_ID)].map((m) => m[1]));
+  }
+  function linkedinListCards(seen) {
+    const pane = linkedinPane();
+    for (const el of document.querySelectorAll('li, [role="listitem"]')) {
+      if (pane && (pane.contains(el) || el.contains(pane))) continue;
+      if (el.closest("[data-job-scanner]") || el.querySelector('li, [role="listitem"]')) continue; // innermost items only
+      const ids = idsIn(el);
+      if (ids.size !== 1) continue;
+      const id = [...ids][0];
+      if (!seen.has(id) && lines(el).length >= 2) seen.set(id, el);
+    }
+  }
+
+  // the card around a job link: its list item, or the largest ancestor that still holds only this one job
+  function linkCard(a) {
+    const li = a.closest("li");
+    if (li && li.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]').length <= 3) return li;
+    let el = a, best = null;
+    for (let i = 0; i < 8 && el.parentElement && el.parentElement !== document.body; i++) {
+      el = el.parentElement;
+      const ids = new Set([...el.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]')]
+        .map((x) => (x.href.match(/(\d{6,})/) || [])[1]).filter(Boolean));
+      if (ids.size > 1) break;
+      best = el;
+    }
+    return best && lines(best).length >= 2 ? best : null;
+  }
+
   /* ---------- the sites ---------- */
   const SITES = [
     {
@@ -103,6 +172,15 @@
           if (el.closest(".jobs-search__job-details, .jobs-details, .job-view-layout")) continue;
           seen.set(id, el.closest("li") || el);
         }
+        // LinkedIn's newer layouts drop those attributes; find cards by their job links instead
+        for (const a of document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]')) {
+          const id = (a.href.match(/\/jobs\/view\/(?:[^/?#]*-)?(\d{6,})/) || a.href.match(/[?&]currentJobId=(\d{6,})/) || [])[1];
+          if (!id || seen.has(id)) continue;
+          if (a.closest(".jobs-search__job-details, .jobs-details, .job-view-layout, .scaffold-layout__detail, [data-job-scanner]")) continue;
+          const card = linkCard(a);
+          if (card) seen.set(id, card);
+        }
+        if (location.pathname.startsWith("/jobs")) linkedinListCards(seen);
         return [...seen].map(([id, el]) => ({ id, el, url: `https://www.linkedin.com/jobs/view/${id}/` }));
       },
       card(el) {
@@ -122,14 +200,14 @@
       current() {
         const id = param("currentJobId") || (location.pathname.match(/\/jobs\/view\/(?:[^/]*-)?(\d{6,})/) || [])[1];
         if (!id) return null;
-        const pane = one(document, ".jobs-search__job-details--container, .jobs-details, .job-view-layout, .scaffold-layout__detail, main") || document.body;
+        const pane = one(document, ".jobs-search__job-details--container, .jobs-details, .job-view-layout, .scaffold-layout__detail") || linkedinPane() || one(document, "main") || document.body;
         const link = one(pane, '.job-details-jobs-unified-top-card__job-title a[href*="/jobs/view/"], .jobs-unified-top-card__job-title a[href*="/jobs/view/"]');
         if (link && !link.href.includes(id)) return null; // the pane hasn't caught up with the URL yet
         return { id, root: pane, url: `https://www.linkedin.com/jobs/view/${id}/` };
       },
       item(root) {
         const description = textOf(root, "#job-details, .jobs-description__content, .jobs-description-content__text, .jobs-box__html-content, .show-more-less-html__markup, .description__text");
-        if (description.length < 80) return null;
+        if (description.length < 80) return newerItem(root);
         const title = textOf(root, ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, .top-card-layout__title, h1");
         const company = textOf(root, ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, .topcard__org-name-link");
         const top = textOf(root, ".job-details-jobs-unified-top-card__tertiary-description-container, .job-details-jobs-unified-top-card__primary-description-container, .jobs-unified-top-card__primary-description, .topcard__flavor-row", 400);
@@ -276,7 +354,7 @@
       sent.set(r.id, sig);
       return true;
     });
-    if (fresh.length) send({ type: "capture", jobs: fresh });
+    if (fresh.length) { panel.reading(fresh.length); send({ type: "capture", jobs: fresh }); }
   }
 
   // Is the site still being read? Sites change their pages; when cards or a posting stop yielding what we need,
@@ -331,10 +409,15 @@
     if (changed) panel.job({ source: site.source, id: cur.id, title: row.title });
   }
 
-  let timer = null;
+  let timer = null, firstAsk = 0;
+  // Debounced, but never put off for more than 1.5s: LinkedIn changes its page all the time (timestamps, ads,
+  // presence dots), and a plain debounce kept being reset, so cards scrolled into view were never read.
   function schedule() {
+    const now = Date.now();
+    if (!timer) firstAsk = now;
     clearTimeout(timer);
-    timer = setTimeout(() => { if (enabled) { scanCards(); scanItem(); checkHealth(); } }, 700);
+    timer = setTimeout(() => { timer = null; if (enabled) { scanCards(); scanItem(); checkHealth(); } },
+      Math.max(0, Math.min(700, 1500 - (now - firstAsk))));
   }
 
   /* ---------- stamps on the cards ---------- */
@@ -384,6 +467,10 @@
       .tag { display:flex; align-items:center; gap:8px; padding:7px 12px; border-radius:999px; cursor:pointer; user-select:none;
         background:#fff; color:#1f2328; border:1px solid #d0d7de; box-shadow:0 2px 8px rgba(0,0,0,.15); font:600 12px/1.2 inherit; }
       .dot { width:8px; height:8px; border-radius:50%; background:#8c959f; flex:none; }
+      .txt { display:flex; flex-direction:column; gap:2px; } .sum { font-weight:500; color:#57606a; font-size:11px; }
+      .sum:empty { display:none; } .sum b { font-weight:700; } .sum .a { color:#0f6b4f; } .sum .c { color:#8a5a00; }
+      .busy .dot { animation: pulse 1s ease-in-out infinite; background:#0969da; }
+      @keyframes pulse { 50% { opacity:.25; } }
       .ok .dot { background:#1a7f5a; } .bad .dot { background:#cf222e; }
       .card { display:none; width:340px; max-height:70vh; overflow:auto; margin-bottom:8px; padding:14px 16px; border-radius:12px;
         background:#fff; color:#1f2328; border:1px solid #d0d7de; box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:13px; line-height:1.45; }
@@ -403,8 +490,26 @@
       .warn.scam { background:#fde8e8; color:#a40e26; font-weight:600; }
       textarea.letter { width:100%; min-height:220px; margin-top:4px; padding:8px; border:1px solid #d0d7de; border-radius:8px; font:13px/1.45 inherit; resize:vertical; }
     </style>
-    <div class="wrap"><div class="card"></div><div class="tag"><span class="dot"></span><span class="txt">Job Scanner · watching</span></div></div>`;
-    const wrap = root.querySelector(".wrap"), tag = root.querySelector(".tag"), txt = root.querySelector(".txt"), card = root.querySelector(".card");
+    <div class="wrap"><div class="card"></div><div class="tag"><span class="dot"></span><span class="txt"><span class="line">Job Scanner · watching</span><span class="sum"></span></span></div></div>`;
+    const wrap = root.querySelector(".wrap"), tag = root.querySelector(".tag"), txt = root.querySelector(".line"), sum = root.querySelector(".sum"), card = root.querySelector(".card");
+    let readingTimer = null;
+    // the second line of the tag: what's been read on this page so far, so the search's progress shows while scrolling
+    function summary() {
+      const ms = [...marks.values()].filter((m) => m.source === site.source);
+      if (!ms.length) { sum.textContent = ""; return; }
+      const n = (v) => ms.filter((m) => m.verdict === v && !m.status).length;
+      const tracked = ms.filter((m) => m.status).length;
+      sum.innerHTML = `${ms.length} job${ms.length === 1 ? "" : "s"} read · <b class="a">${n("Apply")} Apply</b> · <b class="c">${n("Consider")} Consider</b>`
+        + (tracked ? ` · ${tracked} tracked` : "");
+    }
+    function reading(count) {
+      mount();
+      tag.classList.add("busy");
+      if (!job) txt.textContent = `Job Scanner · reading ${count} new…`;
+      clearTimeout(readingTimer);
+      readingTimer = setTimeout(() => tag.classList.remove("busy"), 15000); // never spin forever if no answer comes
+    }
+    function read() { clearTimeout(readingTimer); tag.classList.remove("busy"); summary(); }
     let shown = false, showTag = true, job = null, data = null, busy = false, note = "", letter = "";
     tag.addEventListener("click", () => { wrap.classList.toggle("open"); if (wrap.classList.contains("open")) refresh(); });
 
@@ -498,7 +603,7 @@
       });
     }
     return {
-      status, tagFor,
+      status, tagFor, reading, read,
       setVisible(v) { showTag = v; if (!v && shown) { box.remove(); shown = false; } },
       job(j) {
         if (j && job && j.id === job.id) return;
@@ -517,16 +622,39 @@
     };
   })();
 
+  // What the page is made of, for fixing a reader: tags, roles, attribute names and counts, never page text or values.
+  function structure(id) {
+    const shape = (el) => el && { tag: el.tagName.toLowerCase(), role: el.getAttribute("role") || "",
+      attrs: [...el.attributes].map((a) => a.name).filter((n) => n !== "style").slice(0, 12), lines: lines(el).length };
+    const holders = [];
+    if (id) {
+      for (const el of document.querySelectorAll("*")) {
+        if (holders.length >= 6) break;
+        const hit = [...el.attributes].find((a) => a.value.includes(id));
+        if (hit) holders.push({ ...shape(el), attr: hit.name, in_li: !!el.closest('li, [role="listitem"]') });
+      }
+    }
+    const items = [...document.querySelectorAll('li, [role="listitem"]')].filter((el) => idsIn(el).size === 1);
+    return {
+      li: document.querySelectorAll("li").length, listitems: document.querySelectorAll('[role="listitem"]').length,
+      links_view: document.querySelectorAll('a[href*="/jobs/view/"]').length, links_current: document.querySelectorAll('a[href*="currentJobId="]').length,
+      data_job_id: document.querySelectorAll("[data-job-id], [data-occludable-job-id]").length,
+      items_with_one_id: items.length, first_item: shape(items[0]), id_holders: holders,
+      about_heading: !!aboutHeading(), pane: shape(linkedinPane()), h1: document.querySelectorAll("h1").length,
+    };
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     if (msg.type === "scanner-status") {
-      if (!msg.ok) { panel.status("bad", msg.error && /reach/i.test(msg.error) ? "not connected" : "not paired"); for (const id of msg.forget || []) sent.delete(id); return; }
+      if (!msg.ok) { panel.read(); panel.status("bad", msg.error && /reach/i.test(msg.error) ? "not connected: is the app running?" : "not paired: click the icon, then Settings"); for (const id of msg.forget || []) sent.delete(id); return; }
       for (const m of msg.marks || []) {
         if (m.source !== site.source) continue;
         marks.set(m.id, m);
         panel.captured(m);
       }
       applyStamps();
-      if (!currentId || !marks.has(currentId)) panel.status("ok", `${marks.size} captured`);
+      panel.read();
+      if (!currentId || !marks.has(currentId)) panel.status("ok", "watching");
     } else if (msg.type === "scan-now") {
       scanCards(); scanItem(true);
       reply({ ok: true, site: site.source, cards: site.cards().length, posting: currentId });
@@ -538,7 +666,8 @@
       if (item && item.description) item.description = item.description.slice(0, 300) + "…";
       reply({ extension: chrome.runtime.getManifest().version, site: site.source, path: location.pathname, cards_found: site.cards().length,
         cards, current: cur && { id: cur.id, url: cur.url }, item, json_ld: !!jsonLdJob(),
-        health: { cards_found: health.cardsFound, cards_read: health.cardsRead, posting_unread: !!health.itemMissSince, warning: health.warned } });
+        health: { cards_found: health.cardsFound, cards_read: health.cardsRead, posting_unread: !!health.itemMissSince, warning: health.warned },
+        structure: structure(cur && cur.id) });
     }
   });
 
@@ -561,7 +690,7 @@
       if (muts.every((m) => [...m.addedNodes, ...m.removedNodes].every((n) => n.dataset && (n.dataset.jobScanner !== undefined)))) return;
       schedule();
     }).observe(document.documentElement, { childList: true, subtree: true });
-    addEventListener("scroll", schedule, { passive: true });
+    addEventListener("scroll", schedule, { passive: true, capture: true }); // capture: LinkedIn scrolls an inner list, not the window
     let lastUrl = location.href;
     setInterval(() => { if (location.href !== lastUrl) { lastUrl = location.href; schedule(); } }, 800);
   }

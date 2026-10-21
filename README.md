@@ -69,6 +69,8 @@ No subscription? Install the `anthropic` package (`pip install anthropic`) and s
 | Greenhouse, Lever, Workday career pages | | ✓ |
 | Any other site | | **Scan this page** in the extension's popup. Select the description first if the page is unusual. |
 
+The tag in the bottom-right corner shows what's happening as you scroll: jobs read on this page and how many are Apply or Consider; its dot pulses while new cards are being read. Once a day the extension also reminds you when tracked jobs have a to-do due (follow up, say thank you), and the Insights page has a week in review.
+
 Sites change their pages often. When the extension finds job cards or a posting it can't read, the panel and the toolbar icon say so (an amber **!**), and the Jobs and Setup pages list which site is affected. The icon shows **off** when it can't reach the app. To get it fixed, open a search or posting, click the extension, then **Copy diagnostics**, and paste the result into an issue. It contains public page data only. `tests/extension/` runs the readers against saved pages in `tests/fixtures/` (needs Node and Playwright).
 
 On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years of experience asked, degree and security clearance, which are read from each posting.

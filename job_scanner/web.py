@@ -9,6 +9,7 @@ import ipaddress
 import json
 import mimetypes
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -399,6 +400,10 @@ def make_handler(ledger: jobs.Ledger):
                 if path == "/api/capture/ping":
                     return self._json({"ok": True, "jobs": len(ledger.jobs), "extension_version": extension_version(),
                                        "profile_ready": not profile.is_empty(current_profile())})
+                if path == "/api/capture/due":  # the extension's daily follow-up reminder
+                    due = [n for n in advice.todo(list(ledger.jobs.values())) if n["urgency"] == "now"]
+                    return self._json({"count": len(due), "jobs": [{"title": n.get("title_job"), "company": n.get("company"),
+                                                                     "todo": n["title"]} for n in due[:5]]})
                 if path == "/api/capture/job":
                     rec = ledger.get(f"{q.get('source', '')}:{q.get('id', '')}")
                     if rec is None:
@@ -443,7 +448,8 @@ def make_handler(ledger: jobs.Ledger):
                 p = current_profile()
                 return self._json({"accuracy": insights.accuracy(recs), "skills": insights.skill_gaps(recs, p),
                                    "pay": insights.pay_report(recs, p), "plan": store.read_json("insights.json", {}).get("plan"),
-                                   "week": insights.weekly(recs, datetime.now(timezone.utc))})
+                                   "week": insights.weekly(recs, datetime.now(timezone.utc), advice.todo(recs),
+                                                           {k: ai.usage_summary()[k] for k in ("today", "week")})})
             if path.startswith("/api/jobs/"):
                 rec = ledger.get(path[len("/api/jobs/"):])
                 if rec is None:
@@ -528,7 +534,11 @@ def make_handler(ledger: jobs.Ledger):
                 text = str(data.get("resume") or profile.all_resume_text(current_profile()))
                 if len(text) < 100:
                     raise BadRequest("Add a résumé first: the draft is written from it.")
-                return self._json(ai.draft_about_me(text, str(data.get("current") or "")))
+                current = str(data.get("current") or "")
+                out = ai.draft_about_me(text, current)
+                # a figure that none of the résumés (or their own words) contain is worth a second look before saving
+                out["check"] = unsupported_numbers(re.sub(r"(?<=[.!?])\s+", "\n", out["about_me"]), text + "\n" + current)
+                return self._json(out)
             if path == "/api/settings":
                 changes = {}
                 if "auto_analyze" in data:

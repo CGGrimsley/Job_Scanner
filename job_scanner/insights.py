@@ -189,9 +189,10 @@ def pay_position(rec: dict, recs: list) -> dict | None:
     return {"n": len(others), "enough": True, "percentile": round(100 * below / len(others)), **_quartiles(others)}
 
 
-def weekly(recs: list, now: datetime) -> dict:
-    """This week at a glance: new strong matches you haven't acted on, and applications sent."""
-    from .jobs import best
+def weekly(recs: list, now: datetime, due: list | None = None, usage: dict | None = None) -> dict:
+    """The last seven days: new strong matches you haven't acted on, what you sent, what moved forward or closed,
+    follow-ups due (advice.todo items marked now) and how much Claude was used."""
+    from .jobs import best, SOURCES
 
     def recent(iso, days=7):
         try:
@@ -199,7 +200,23 @@ def weekly(recs: list, now: datetime) -> dict:
         except (TypeError, ValueError):
             return False
 
-    fresh = [r for r in recs if recent(r.get("first_seen")) and not r.get("status") and best(r)["score"] >= 70]
+    def brief(r):
+        b = best(r)
+        return {"key": r["key"], "title": r.get("title"), "company": r.get("company"), "score": b["score"],
+                "verdict": b["verdict"], "by": b["by"], "source_name": SOURCES.get(r["source"], r["source"])}
+
+    fresh = sorted((r for r in recs if recent(r.get("first_seen")) and not r.get("status") and not r.get("closed")
+                    and best(r)["score"] >= 70), key=lambda r: -best(r)["score"])
     sent = [r for r in recs if r.get("applied_at") and _days_since(r["applied_at"], now.date()) is not None
             and _days_since(r["applied_at"], now.date()) < 7]
-    return {"new_matches": len(fresh), "applied": len(sent)}
+    moved = sorted(((h["at"], h["status"], r) for r in recs for h in r.get("history") or []
+                    if h.get("status") in ("interviewing", "offer", "rejected", "withdrawn") and recent(h.get("at"))),
+                   key=lambda e: e[0], reverse=True)
+    return {"new_matches": len(fresh), "applied": len(sent),
+            "new_jobs": sum(1 for r in recs if recent(r.get("first_seen"))),
+            "read_by_claude": sum(1 for r in recs if recent((r.get("ai") or {}).get("at"))),
+            "best_unapplied": [brief(r) for r in fresh[:5]],
+            "sent": [brief(r) for r in sent],
+            "moved": [{**brief(r), "status": st, "at": at[:10]} for at, st, r in moved],
+            "due": [n for n in (due or []) if n.get("urgency") == "now"][:8],
+            "usage": usage or {}}

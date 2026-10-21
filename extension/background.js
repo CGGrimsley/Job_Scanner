@@ -132,7 +132,27 @@ function dropAuto(tab) {
 chrome.tabs.onRemoved.addListener((tab) => { perTab.delete(tab); dropAuto(tab); });
 chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) { perTab.delete(tab); dropAuto(tab); } });
 
-chrome.notifications.onClicked.addListener((id) => { if (id.startsWith("https://")) chrome.tabs.create({ url: id }); });
+chrome.notifications.onClicked.addListener(async (id) => {
+  if (id.startsWith("https://")) chrome.tabs.create({ url: id });
+  if (id === "follow-ups") chrome.tabs.create({ url: `${(await settings()).server}/#tracker` });
+});
+
+// At most once a day: a reminder when tracked jobs have a to-do that's due (follow up, thank-you, apply soon).
+async function checkFollowUps() {
+  const s = await settings();
+  if (!s.notify || !s.enabled || !s.token) return;
+  const out = await call("/api/capture/due");
+  if (!out.ok || !out.count) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const { dueNoticed } = await chrome.storage.local.get({ dueNoticed: "" });
+  if (dueNoticed === today) return;
+  await chrome.storage.local.set({ dueNoticed: today });
+  chrome.notifications.create("follow-ups", {
+    type: "basic", iconUrl: "icons/icon128.png", priority: 1,
+    title: out.count === 1 ? "1 job needs you today" : `${out.count} jobs need you today`,
+    message: out.jobs.map((j) => `${j.todo}: ${[j.title, j.company].filter(Boolean).join(" at ")}`).join("\n") || "See the Tracker in Job Scanner.",
+  });
+}
 
 /* ---------- filling application forms (only when the person clicks Fill this application) ---------- */
 const fillState = new Map(); // tabId -> { key, frames: frame ids with questions left }
@@ -231,7 +251,12 @@ async function checkForUpdate() {
 }
 chrome.alarms.create("scanner-update", { periodInMinutes: 30 });
 chrome.alarms.create("scanner-health", { periodInMinutes: 5 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === "scanner-update") checkForUpdate(); if (a.name === "scanner-health") checkHealth(); });
+chrome.alarms.create("scanner-followups", { delayInMinutes: 1, periodInMinutes: 180 });
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === "scanner-update") checkForUpdate();
+  if (a.name === "scanner-health") checkHealth();
+  if (a.name === "scanner-followups") checkFollowUps();
+});
 chrome.runtime.onStartup.addListener(() => { checkForUpdate(); checkHealth(); });
 chrome.runtime.onInstalled.addListener(checkHealth);
 
