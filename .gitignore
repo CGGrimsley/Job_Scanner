@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+.env
+*.tmp
+.pytest_cache/
+# personal data lives in ~/.job_scanner (JOB_SCANNER_DATA); never commit a copy
+data/
+profile.json
+jobs.json
+settings.json
+ai_usage.json

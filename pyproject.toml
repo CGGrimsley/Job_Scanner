@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-scanner"
+version = "0.1.0"
+description = "Reads the job postings you browse and gives AI guidance on fit and applications, on your Claude subscription."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+api = ["anthropic>=0.40"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+job-scanner = "job_scanner.cli:main"
+
+[tool.setuptools]
+packages = ["job_scanner"]
+
+[tool.setuptools.package-data]
+job_scanner = ["static/*"]
