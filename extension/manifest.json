@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Scanner",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Reads the job postings you browse on LinkedIn, Indeed, NCWorks and company career pages, and shows how well each one fits you, with guidance from Claude.",
   "icons": {
     "16": "icons/icon16.png",

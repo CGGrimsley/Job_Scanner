@@ -67,3 +67,16 @@ def test_linkedin_newer_layout(reads):
     assert "Tableau" in item["description"] and not item["description"].startswith("About the job")
     assert item["location"] == "Raleigh, NC" and item["applicants"] == 100
     assert p["diag"]["structure"]["items_with_one_id"] == 2 and p["diag"]["structure"]["about_heading"]
+
+
+def test_indeed_redesigned_posting_pane(reads):
+    p = reads["indeed-new-pane.html"]
+    cards = by_kind(p, "card")
+    assert cards[0]["location"] == "Danville, VA"  # without the commute time Indeed puts first
+    item = by_kind(p, "item")[0]
+    assert item["id"] == "29e32c569f0df126"
+    assert item["title"] == "Paralegal/Legal Assistant - Collections & Civil Litigation"
+    assert item["company"] == "Daniel, Medley & Kirby, P.C." and item["location"] == "110 N Union Street, Danville, VA 24541"
+    assert item["pay_text"] == "$2,600 - $3,200 a month" and item["job_type"] == "Full-time" and item["easy_apply"] is True
+    assert item["description"].startswith("Daniel, Medley & Kirby") and "Full job description" not in item["description"]
+    assert [h for h in p["health"] if not h["ok"]] == []
