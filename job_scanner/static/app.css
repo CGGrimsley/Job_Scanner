@@ -89,3 +89,9 @@ ul.clean { margin: 0; padding-left: 20px; } ul.clean li { margin: 4px 0; }
 .tag.fact { background: var(--consider-bg); color: var(--consider); }
 .card.warn { border-color: var(--consider); background: var(--consider-bg); color: var(--ink); }
 .warn-text { color: var(--bad); font-weight: 600; }
+.tag.warn { background: var(--consider-bg); color: var(--consider); font-weight: 600; }
+.rewrite { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; }
+.rewrite .was { color: var(--muted); text-decoration: line-through; font-size: 13px; }
+.rewrite .now { font-weight: 600; }
+table.results { width: 100%; border-collapse: collapse; font-size: 14px; }
+table.results th, table.results td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }

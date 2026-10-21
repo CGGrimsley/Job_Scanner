@@ -251,6 +251,17 @@ def cancel(tag: str) -> int:
 # --- calls -------------------------------------------------------------------------------------------------------
 
 
+MODELS = {"": "Claude Code's default", "haiku": "Haiku (fastest, uses least)", "sonnet": "Sonnet (balanced)",
+          "opus": "Opus (most capable, uses most)"}
+API_MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+
+
+def model_for(auto: bool) -> str:
+    """The model chosen in Setup for automatic reads or for things you ask for ('' = the default)."""
+    m = str(store.settings().get("model_auto" if auto else "model_ondemand") or "")
+    return m if m in MODELS else ""
+
+
 def ask_json(system: str, prompt: str, schema: dict, kind: str = "other", files: dict | None = None,
              auto: bool = False, tag: str | None = None) -> dict:
     b = backend()
@@ -258,18 +269,19 @@ def ask_json(system: str, prompt: str, schema: dict, kind: str = "other", files:
         raise AIError("Claude isn't set up. Install Claude Code and sign in with your Claude account "
                       "(see Setup in the app).")
     call = _cli if b == "cli" else _api
+    model = model_for(auto)
     with _gate.slot(auto, tag):
         try:
-            return call(system, prompt, schema, kind, files)
+            return call(system, prompt, schema, kind, files, model)
         except _Transient:
             time.sleep(RETRY_WAIT)
         try:
-            return call(system, prompt, schema, kind, files)
+            return call(system, prompt, schema, kind, files, model)
         except _Transient as e:
             raise AIError(f"{e} (tried twice; Claude may be busy, so try again in a minute)") from None
 
 
-def _cli(system: str, prompt: str, schema: dict, kind: str, files: dict | None) -> dict:
+def _cli(system: str, prompt: str, schema: dict, kind: str, files: dict | None, model: str = "") -> dict:
     """`files` ({name: bytes}) are written into the temp folder and Claude may Read only those (a résumé PDF)."""
     exe = claude_command()
     if not exe:
@@ -280,8 +292,8 @@ def _cli(system: str, prompt: str, schema: dict, kind: str, files: dict | None) 
            "--tools", "Read" if files else ""]
     if files:
         cmd += ["--allowedTools", "Read(./**)"]
-    if CLI_MODEL:
-        cmd += ["--model", CLI_MODEL]
+    if model or CLI_MODEL:
+        cmd += ["--model", model or CLI_MODEL]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     # run outside the repo so no project CLAUDE.md or settings load into every call
     with tempfile.TemporaryDirectory() as cwd:
@@ -319,7 +331,7 @@ def _cli(system: str, prompt: str, schema: dict, kind: str, files: dict | None) 
     return parse_json_text(out.get("result", ""))
 
 
-def _api(system: str, prompt: str, schema: dict, kind: str, files: dict | None) -> dict:
+def _api(system: str, prompt: str, schema: dict, kind: str, files: dict | None, model: str = "") -> dict:
     import anthropic
 
     client = anthropic.Anthropic()
@@ -330,7 +342,7 @@ def _api(system: str, prompt: str, schema: dict, kind: str, files: dict | None) 
                                                            "data": base64.b64encode(blob).decode()}})
     content.append({"type": "text", "text": prompt + "\n\nAnswer with JSON matching this schema:\n" + json.dumps(schema)})
     try:
-        resp = client.messages.create(model=API_MODEL, max_tokens=8000, system=system,
+        resp = client.messages.create(model=API_MODELS.get(model, API_MODEL), max_tokens=8000, system=system,
                                       messages=[{"role": "user", "content": content}])
     except anthropic.AuthenticationError:
         raise AIError("The Anthropic API key is missing or invalid.") from None
@@ -426,6 +438,11 @@ def posting_text(job: dict) -> str:
             lines.append(f"{label}: {job[k]}")
     if job.get("tags"):
         lines.append("Details shown: " + ", ".join(job["tags"]))
+    if job.get("repost"):
+        lines.append(f"History: reposted {job['repost']['count']} time(s) since {job['repost']['since']} (seen by the app)")
+    emp = (job.get("employer") or {}).get("read")
+    if emp:
+        lines.append(f"About the employer, from its postings: {emp.get('employer_type', '')}. {emp.get('summary', '')}")
     lines.append("\nDescription:\n" + (job.get("description") or "(only the search card was captured; no description)"))
     return "\n".join(lines)
 
@@ -501,3 +518,77 @@ def suggest_from_text(resume: str) -> dict:
               "this person is qualified for next) and years_experience (total professional years, or null). Set "
               "resume_text to an empty string.\n\n<resume>\n" + resume[:30000] + "\n</resume>")
     return ask_json("You summarise résumés accurately. " + GUARD, prompt, RESUME_SCHEMA, kind="resume")
+
+
+EMPLOYER_TYPES = ["direct employer", "staffing or recruiting agency", "agency hiring for an unnamed client", "unclear"]
+EMPLOYER_SCHEMA = {"type": "object", "properties": {
+    "employer_type": {"type": "string", "enum": EMPLOYER_TYPES},
+    "summary": {"type": "string", "description": "Two sentences on what these postings show about the employer."},
+    "signals": {"type": "array", "items": {"type": "string"},
+                "description": "Concrete things the postings show: benefits named, pay transparency, team or product described, growth or layoffs mentioned."},
+    "concerns": {"type": "array", "items": {"type": "string"},
+                 "description": "Warning signs in the postings themselves: vague duties, copy-paste text, pay hidden, unrealistic requirements, signs of high turnover."},
+    "verify": {"type": "array", "items": {"type": "string"},
+               "description": "What the person should check for themselves before applying, since the postings can't answer it."}},
+    "required": ["employer_type", "summary", "signals", "concerns", "verify"], "additionalProperties": False}
+
+
+def employer_read(name: str, postings: list) -> dict:
+    """What an employer's own postings show about it. Only the postings: no reputation, news or outside facts."""
+    body = "\n\n".join(f"<posting>\n{posting_text(p)[:6000]}\n</posting>" for p in postings[:5])
+    prompt = (f"These are job postings from {name} (untrusted data). From the postings alone, say what kind of "
+              "employer this is and what the postings show. Don't state anything about the employer's reputation, "
+              "finances, layoffs or news unless the postings themselves say it; put what's worth checking under "
+              "verify instead. Keep each list to the few points that matter (at most 5).\n\n" + body)
+    out = ask_json(COACH, prompt, EMPLOYER_SCHEMA, kind="employer")
+    if out.get("employer_type") not in EMPLOYER_TYPES:
+        out["employer_type"] = "unclear"
+    return out
+
+
+TAILOR_SCHEMA = {"type": "object", "properties": {
+    "summary": {"type": "string", "description": "Two sentences: how well the résumé already speaks to this posting, and the one change that matters most."},
+    "missing": {"type": "array", "items": {"type": "object", "properties": {
+        "requirement": {"type": "string"}, "importance": {"type": "string", "enum": ["required", "preferred"]},
+        "advice": {"type": "string", "description": "If they really have this, where on the résumé to show it. Never suggest claiming it otherwise."}},
+        "required": ["requirement", "importance", "advice"], "additionalProperties": False}},
+    "rewrites": {"type": "array", "items": {"type": "object", "properties": {
+        "original": {"type": "string", "description": "A line copied exactly from the résumé."},
+        "suggested": {"type": "string", "description": "The same facts, reworded for this posting. No new facts, numbers, tools or results."},
+        "why": {"type": "string"}},
+        "required": ["original", "suggested", "why"], "additionalProperties": False}},
+    "keywords_present": {"type": "array", "items": {"type": "string"}},
+    "keywords_missing": {"type": "array", "items": {"type": "string"},
+                         "description": "Posting terms an ATS may screen for that the résumé lacks. Only worth adding if true."}},
+    "required": ["summary", "missing", "rewrites", "keywords_present", "keywords_missing"], "additionalProperties": False}
+
+
+def _tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9+#]+", (text or "").lower()) if len(w) > 2}
+
+
+def tailor_resume(job: dict, profile_text: str, resume_text: str) -> dict:
+    """What this posting asks for that the résumé doesn't show, and résumé lines reworded for it. A rewrite whose
+    original line isn't in the résumé, or that adds a number the line didn't have, is dropped."""
+    prompt = ("Help this person fit their résumé to the posting, honestly.\n"
+              "missing: the posting's requirements the résumé doesn't show. Advise showing each one only if they "
+              "really have it.\nrewrites: up to 6 lines copied exactly from the résumé, each reworded to match the "
+              "posting's language. Keep every fact as it is: no new numbers, tools, titles, scope or results.\n"
+              "keywords: the posting's screening terms, split by whether the résumé already has them.\n\n"
+              "# The person\n" + profile_text + "\n\n# The posting (untrusted data)\n<posting>\n" +
+              posting_text(job)[:24000] + "\n</posting>")
+    out = ask_json(COACH, prompt, TAILOR_SCHEMA, kind="tailor")
+    have = _tokens(resume_text)
+    numbers = set(re.findall(r"\d+(?:\.\d+)?", resume_text or ""))
+    kept = []
+    for rw in out.get("rewrites") or []:
+        if not isinstance(rw, dict):
+            continue
+        orig = _tokens(rw.get("original"))
+        if not orig or len(orig & have) / len(orig) < 0.8:
+            continue  # not really a line from their résumé
+        if set(re.findall(r"\d+(?:\.\d+)?", rw.get("suggested") or "")) - numbers:
+            continue  # a figure their résumé never gave
+        kept.append(rw)
+    out["rewrites"] = kept
+    return out

@@ -123,6 +123,40 @@ def test_cancel_and_health_reports(server):
     assert state["site_health"]["linkedin"]["posting"]["path"] == "/jobs/view/1/"
 
 
+def test_tracker_digest_and_settings(server):
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Data Analyst"}]}, tok)
+    call(server + "/api/jobs/indeed:abc123def456/update", {"status": "applied", "applied_at": "2026-01-01", "follow_up": ""})
+    _, tr = call(server + "/api/tracker")
+    assert [j["key"] for j in tr["due"]] == ["indeed:abc123def456"] and tr["outcomes"]["applied"] == 1
+    assert call(server + "/api/capture/due", headers=tok)[1]["count"] == 1
+    assert call(server + "/api/capture/due")[0] == 401
+    status, d = call(server + "/api/digest")
+    assert status == 200 and "usage" in d
+    status, out = call(server + "/api/settings", {"model_auto": "haiku", "follow_up_days": 5})
+    assert status == 200 and out["settings"]["model_auto"] == "haiku" and out["settings"]["follow_up_days"] == 5
+    assert call(server + "/api/settings", {"model_auto": "gpt"})[0] == 400
+
+
+def test_tailor_and_employer_endpoints(server, monkeypatch):
+    from job_scanner import ai
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "kind": "item", "title": "Data Analyst",
+                                             "company": "Acme", "description": "SQL " * 50}]}, tok)
+    status, out = call(server + "/api/jobs/indeed:abc123def456/tailor", {})
+    assert status == 400 and "résumé" in out["error"]
+    call(server + "/api/profile", {"profile": {"target_titles": "Data Analyst", "resume": "Analyst at Initech. Wrote SQL reports. " * 5}})
+    monkeypatch.setattr(ai, "tailor_resume", lambda *a: {"summary": "ok", "missing": [], "rewrites": [], "keywords_present": [], "keywords_missing": []})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/tailor", {})
+    assert status == 200 and out["job"]["tailoring"]["summary"] == "ok"
+    monkeypatch.setattr(ai, "employer_read", lambda name, postings: {"employer_type": "direct employer", "summary": f"{len(postings)} read",
+                                                                     "signals": [], "concerns": [], "verify": []})
+    status, out = call(server + "/api/jobs/indeed:abc123def456/employer", {})
+    assert status == 200 and out["job"]["employer"]["read"]["summary"] == "1 read"
+    _, listing = call(server + "/api/jobs")
+    assert listing["jobs"][0]["employer"]["name"] == "Acme"
+
+
 def test_listing_filters_over_http(server):
     tok = {"X-Scanner-Token": store.pairing_token()}
     call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "kind": "item", "title": "Analyst",

@@ -12,9 +12,10 @@ import hashlib
 import io
 import re
 import threading
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 
-from . import facts, scoring, store
+from . import facts, groups, scoring, store
 
 FILE = "jobs.json"
 STATUSES = ("", "saved", "applied", "interviewing", "offer", "rejected", "withdrawn", "dismissed")
@@ -70,6 +71,43 @@ class Ledger:
         for rec in self.jobs.values():  # jobs saved before facts were read
             if "facts" not in rec:
                 rec["facts"] = facts.of(rec)
+        self.group_of, self.members = {}, {}
+        self._index()
+
+    def _index(self) -> None:
+        """Find each job's copies (the same job on other sites, or relisted) and flag reposts."""
+        group_of = groups.build(self.jobs)
+        members = defaultdict(list)
+        for k, g in group_of.items():
+            members[g].append(k)
+        for key, rec in self.jobs.items():
+            g = group_of.get(key)
+            groups.annotate(rec, groups.reposts([self.jobs[k] for k in members[g]] if g else [rec]))
+        self.group_of, self.members = group_of, dict(members)
+
+    def copies(self, rec: dict) -> list:
+        g = self.group_of.get(rec["key"])
+        return [self.jobs[k] for k in self.members.get(g, []) if k != rec["key"] and k in self.jobs] if g else []
+
+    def mark(self, rec: dict) -> dict:
+        """mark_for, plus the status you gave one of its copies (applied on LinkedIn shows on the Indeed card)."""
+        m = mark_for(rec)
+        if not m["status"]:
+            for c in self.copies(rec):
+                if c.get("status") and c["status"] != "dismissed":
+                    m["status"], m["status_on"] = c["status"], SOURCES.get(c["source"], c["source"])
+                    break
+        return m
+
+    def public(self, rec: dict) -> dict:
+        out = public(rec)
+        out["copies"] = [{"key": c["key"], "source": c["source"], "source_name": SOURCES.get(c["source"], c["source"]),
+                          "url": c.get("url"), "status": c.get("status") or "", "first_seen": c.get("first_seen")}
+                         for c in self.copies(rec)]
+        m = self.mark(rec)
+        if m.get("status_on"):
+            out["copy_status"] = {"status": m["status"], "on": m["status_on"]}
+        return out
 
     @property
     def jobs(self) -> dict:
@@ -84,7 +122,7 @@ class Ledger:
     def add(self, rows: list, profile: dict) -> dict:
         """Merge captured rows in and score them. Returns counts and a mark per row for the page's stamps."""
         added = updated = 0
-        marks, alerts = [], []
+        marks, alerts, touched = [], [], []
         with _lock:
             for raw in rows:
                 row = clean_row(raw)
@@ -103,14 +141,18 @@ class Ledger:
                 before = (rec.get("rules") or {}).get("score")
                 merge(rec, row)
                 rescore(rec, profile)
-                m = mark_for(rec, profile)
+                _posting_date(rec)
+                touched.append((rec, is_new, before))
+            self._index()
+            for rec, is_new, before in touched:
+                m = self.mark(rec)
                 m["new"] = is_new
                 marks.append(m)
                 after = rec["rules"]["score"]
-                if is_new or (before is not None and before < 80 <= after):
-                    if m["score"] >= 80:
-                        alerts.append({"title": rec.get("title"), "company": rec.get("company"), "url": rec.get("url"),
-                                       "score": m["score"], "verdict": m["verdict"]})
+                # a copy of a job you've already been told about isn't news
+                if (is_new or (before is not None and before < 80 <= after)) and m["score"] >= 80 and not (is_new and self.copies(rec)):
+                    alerts.append({"title": rec.get("title"), "company": rec.get("company"), "url": rec.get("url"),
+                                   "score": m["score"], "verdict": m["verdict"]})
             self.save()
         return {"added": added, "updated": updated, "marks": marks, "alerts": alerts[:5]}
 
@@ -119,6 +161,7 @@ class Ledger:
             rec = self.jobs.get(key)
             if rec is None:
                 raise KeyError(key)
+            applied_now = False
             if "status" in changes:
                 st = str(changes["status"] or "")
                 if st not in STATUSES:
@@ -126,8 +169,7 @@ class Ledger:
                 if st != rec.get("status"):
                     rec["status"] = st
                     rec.setdefault("history", []).append({"at": now_iso(), "status": st})
-                    if st == "applied" and not rec.get("applied_at"):
-                        rec["applied_at"] = now_iso()[:10]
+                    applied_now = st == "applied"
             for k in ("notes",):
                 if k in changes:
                     rec[k] = str(changes[k] or "")[:5000]
@@ -136,7 +178,13 @@ class Ledger:
                     v = str(changes[k] or "")
                     if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
                         raise ValueError(f"{k} must be a date (YYYY-MM-DD).")
-                    rec[k] = v
+                    if v or not applied_now:  # the job page's form sends blank dates along with a new status
+                        rec[k] = v
+            if applied_now:
+                rec["applied_at"] = rec.get("applied_at") or now_iso()[:10]
+                rec["applied_score"] = best(rec)["score"]  # what it scored when you applied, for your results
+                if not rec.get("follow_up"):
+                    rec["follow_up"] = (date.fromisoformat(rec["applied_at"]) + timedelta(days=follow_up_days())).isoformat()
             rec["updated"] = now_iso()
             self.save()
             return rec
@@ -149,21 +197,26 @@ class Ledger:
             return rec
 
     def set_letter(self, key: str, letter: str) -> dict:
+        return self.set_field(key, "cover_letter", {"text": letter, "at": now_iso()})
+
+    def set_field(self, key: str, field: str, value) -> dict:
         with _lock:
             rec = self.jobs[key]
-            rec["cover_letter"] = {"text": letter, "at": now_iso()}
+            rec[field] = value
             self.save()
             return rec
 
     def delete(self, key: str) -> None:
         with _lock:
             self.jobs.pop(key, None)
+            self._index()
             self.save()
 
     def rescore_all(self, profile: dict) -> int:
         with _lock:
             for rec in self.jobs.values():
                 rescore(rec, profile)
+            self._index()
             self.save()
             return len(self.jobs)
 
@@ -171,13 +224,15 @@ class Ledger:
         with _lock:
             before = len(self.jobs)
             self.data["jobs"] = {k: r for k, r in self.jobs.items() if keep_tracked and r.get("status")} if keep_tracked else {}
+            self._index()
             self.save()
             return before - len(self.jobs)
 
     def listing(self, q: dict) -> list:
         """Jobs for the app's list, filtered and sorted. q: source, status, verdict, text, sort, and the posting's
         facts: remote (remote|hybrid|onsite), min_pay (listed pay reaches it), max_years (asks for at most that
-        many), degree (needs at most that degree), clearance (none | obtainable)."""
+        many), degree (needs at most that degree), clearance (none | obtainable). A job posted on several sites is
+        listed once, by its best-scoring copy, unless q has dupes."""
         recs = list(self.jobs.values())
         if q.get("remote") in ("remote", "hybrid", "onsite"):
             recs = [r for r in recs if (r.get("rules") or {}).get("remote") == q["remote"]]
@@ -198,8 +253,8 @@ class Ledger:
         st = q.get("status")
         if st == "tracked":
             recs = [r for r in recs if r.get("status") and r["status"] != "dismissed"]
-        elif st == "untracked":
-            recs = [r for r in recs if not r.get("status")]
+        elif st == "untracked":  # a job you're tracking on another site counts as tracked here too
+            recs = [r for r in recs if not r.get("status") and not any(c.get("status") for c in self.copies(r))]
         elif st:
             recs = [r for r in recs if r.get("status") == st]
         elif not q.get("all"):
@@ -220,6 +275,16 @@ class Ledger:
             recs.sort(key=lambda r: (_years(r) is None, _years(r) or 0, -best(r)["score"]))
         else:
             recs.sort(key=lambda r: (best(r)["score"], r.get("last_seen") or ""), reverse=True)
+        if not q.get("dupes"):
+            shown, out = set(), []
+            for r in recs:
+                g = self.group_of.get(r["key"])
+                if g in shown:
+                    continue
+                if g:
+                    shown.add(g)
+                out.append(r)
+            recs = out
         return recs
 
     def csv(self) -> str:
@@ -270,6 +335,26 @@ def merge(rec: dict, row: dict) -> None:
 
 def desc_hash(rec: dict) -> str:
     return hashlib.sha256((rec.get("description") or "").encode()).hexdigest()[:12]
+
+
+def follow_up_days() -> int:
+    try:
+        return max(1, min(60, int(store.settings().get("follow_up_days", 10))))
+    except (TypeError, ValueError):
+        return 10
+
+
+def _posting_date(rec: dict) -> None:
+    """Remember when the site says the job went up; a date that jumps forward a week or more is a repost."""
+    age = (rec.get("rules") or {}).get("age_days")
+    if age is None:
+        return
+    posted = (datetime.now(timezone.utc).date() - timedelta(days=age)).isoformat()
+    was = rec.get("posted_on")
+    if was and (date.fromisoformat(posted) - date.fromisoformat(was)).days >= groups.REPOST_GAP_DAYS:
+        rec["reposts"] = int(rec.get("reposts") or 0) + 1
+    if not was or posted > was:
+        rec["posted_on"] = posted
 
 
 def rescore(rec: dict, profile: dict) -> None:

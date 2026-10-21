@@ -121,7 +121,10 @@ function leftTab(tab) {
 chrome.tabs.onRemoved.addListener((tab) => { perTab.delete(tab); leftTab(tab); });
 chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) { perTab.delete(tab); leftTab(tab); } });
 
-chrome.notifications.onClicked.addListener((id) => { if (id.startsWith("https://")) chrome.tabs.create({ url: id }); });
+chrome.notifications.onClicked.addListener(async (id) => {
+  if (id.startsWith("https://")) chrome.tabs.create({ url: id });
+  if (id === "follow-ups") chrome.tabs.create({ url: `${(await settings()).server}/#tracker` });
+});
 
 // Keep up to date: when the app's copy of the extension (after `git pull`) is newer than the one loaded, reload.
 function newer(a, b) {
@@ -138,6 +141,26 @@ async function checkForUpdate() {
   await chrome.storage.local.set({ reloadTried: out.extension_version });
   chrome.runtime.reload();
 }
+// Once a day at most: a reminder when applications are due a follow-up.
+async function checkFollowUps() {
+  const s = await settings();
+  if (!s.notify) return;
+  const out = await call("/api/capture/due");
+  if (!out.ok || !out.count) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const { dueNoticed } = await chrome.storage.local.get({ dueNoticed: "" });
+  if (dueNoticed === today) return;
+  await chrome.storage.local.set({ dueNoticed: today });
+  chrome.notifications.create("follow-ups", {
+    type: "basic", iconUrl: "icons/icon128.png", priority: 1,
+    title: out.count === 1 ? "1 application is due a follow-up" : `${out.count} applications are due a follow-up`,
+    message: out.jobs.map((j) => [j.title, j.company].filter(Boolean).join(" at ")).join("; ") || "See the Tracker in Job Scanner.",
+  });
+}
 chrome.alarms.create("scanner-update", { periodInMinutes: 30 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === "scanner-update") checkForUpdate(); });
+chrome.alarms.create("scanner-followups", { delayInMinutes: 1, periodInMinutes: 180 });
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === "scanner-update") checkForUpdate();
+  if (a.name === "scanner-followups") checkFollowUps();
+});
 chrome.runtime.onStartup.addListener(checkForUpdate);

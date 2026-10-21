@@ -343,7 +343,7 @@
     el.style.cssText = "position:absolute;top:6px;right:6px;z-index:2;pointer-events:none;";
     const root = el.attachShadow({ mode: "closed" });
     const [ink, bg] = COLORS[mark.verdict] || COLORS.Skip;
-    const label = STATUS[mark.status] ? `${STATUS[mark.status]} · ${mark.score}` : `${mark.by === "ai" ? "✦ " : ""}${mark.verdict} ${mark.score}`;
+    const label = STATUS[mark.status] ? `${STATUS[mark.status]}${mark.status_on ? " on " + mark.status_on : ""} · ${mark.score}` : `${mark.by === "ai" ? "✦ " : ""}${mark.verdict} ${mark.score}`;
     root.innerHTML = `<span style="display:inline-block;padding:3px 8px;border-radius:999px;border:1px solid ${ink};
       background:${bg};color:${ink};font:600 11px/1.3 system-ui,-apple-system,'Segoe UI',sans-serif;white-space:nowrap;
       box-shadow:0 1px 2px rgba(0,0,0,.12)"></span>`;
@@ -394,6 +394,7 @@
       button.primary { background:#0f6b4f; border-color:#0f6b4f; color:#fff; }
       button:disabled { opacity:.6; cursor:default; }
       .note { color:#57606a; font-size:12px; margin-top:8px; }
+      .warn { color:#8a5a00; background:#fdf3df; border-radius:8px; padding:6px 8px; font-size:12px; margin:6px 0; }
     </style>
     <div class="wrap"><div class="card"></div><div class="tag"><span class="dot"></span><span class="txt">Job Scanner · watching</span></div></div>`;
     const wrap = root.querySelector(".wrap"), tag = root.querySelector(".tag"), txt = root.querySelector(".txt"), card = root.querySelector(".card");
@@ -415,6 +416,9 @@
       const j = data.job, m = data.mark, ai = j.ai, r = j.rules || {};
       card.innerHTML = `<h3>${esc(j.title)}</h3><p class="sub">${esc([j.company, j.location].filter(Boolean).join(" · "))}</p>
         ${(j.fact_tags || []).length ? `<p class="sub">Asks for: ${esc(j.fact_tags.join(" · "))}</p>` : ""}
+        ${(j.copies || []).length ? `<p class="sub">Also on ${esc([...new Set(j.copies.map((c) => c.source_name))].join(", "))}${j.copies.some((c) => c.status) ? " (tracked there)" : ""}</p>` : ""}
+        ${j.repost ? `<p class="warn">Reposted ${j.repost.count > 1 ? j.repost.count + " times" : "once"} (first seen ${esc(j.repost.since)}): can mean a ghost job or a hard-to-fill role.</p>` : ""}
+        ${j.employer && j.employer.read && j.employer.read.employer_type !== "direct employer" ? `<p class="warn">Employer: ${esc(j.employer.read.employer_type)}.</p>` : ""}
         <span class="score ${m.verdict}">${m.verdict} ${m.score}</span><span class="sub">${m.by === "ai" ? `Claude's assessment${ai.confidence ? ` · ${ai.confidence} confidence` : ""}` : "Match to your preferences, not your chances"}</span>
         ${ai ? `<p>${esc(ai.summary)}</p>${ai.interview_odds ? `<p><b>Realistic odds:</b> ${esc(ai.interview_odds)}</p>` : ""}${list("Strengths", ai.strengths, (x) => x.requirement + ": " + x.evidence)}
           ${list("Gaps", ai.gaps, (x) => `${x.requirement} (${x.severity}). ${x.how_to_address}`)}
