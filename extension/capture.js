@@ -95,6 +95,7 @@
   const SITES = [
     {
       source: "linkedin", host: /(^|\.)linkedin\.com$/,
+      searching: () => /^\/jobs\/(search|collections)/.test(location.pathname),
       cards() {
         const seen = new Map();
         for (const el of document.querySelectorAll("[data-occludable-job-id], [data-job-id]")) {
@@ -147,6 +148,7 @@
     },
     {
       source: "indeed", host: /(^|\.)indeed\.com$/,
+      searching: () => /^\/(jobs|m\/jobs|q-)/.test(location.pathname) && !param("jk"),
       cards() {
         const seen = new Map();
         for (const el of document.querySelectorAll("[data-jk]")) {
@@ -280,8 +282,8 @@
   }
 
   function scanCards() {
-    const rows = [];
-    for (const c of site.cards()) {
+    const rows = [], cards = site.cards();
+    for (const c of cards) {
       if (!visible(c.el)) continue;
       let row = null;
       try { row = site.card(c.el, c); } catch (_) { row = null; }
@@ -289,6 +291,9 @@
       rows.push({ source: site.source, id: c.id, kind: "card", url: c.url, ...row });
     }
     if (rows.length) post(rows);
+    if (site.searching && site.searching()) {
+      health("cards", rows.length > 0 || cards.slice(0, 10).some((c) => { try { const r = site.card(c.el, c); return !!(r && r.title); } catch (_) { return false; } }));
+    }
     applyStamps();
   }
 
@@ -298,12 +303,29 @@
     if (!cur) { if (currentId) { currentId = null; panel.job(null); } return; }
     let row = null;
     try { row = site.item(cur.root); } catch (_) { row = null; }
+    if (!force) health("posting", !!(row && row.description));
     if (!row || (!row.description && !force)) return;
     for (const k of Object.keys(row)) if (row[k] === undefined || row[k] === "") delete row[k];
     const changed = currentId !== cur.id;
     currentId = cur.id;
     post([{ source: site.source, id: cur.id, kind: "item", url: cur.url, ...row }]);
     if (changed) panel.job({ source: site.source, id: cur.id, title: row.title });
+  }
+
+  /* ---------- noticing when a site changes its pages ---------- */
+  // A posting or page of results that stays unreadable for a while usually means the site changed its layout.
+  // Say so in the panel and tell the app, instead of quietly reading nothing.
+  const UNREAD_MS = 8000;
+  const unread = {}, reported = {};
+  function health(what, ok) {
+    if (site === GENERIC) return;
+    if (ok) unread[what] = 0;
+    else if (!unread[what]) { unread[what] = Date.now(); setTimeout(schedule, UNREAD_MS + 500); return; }
+    else if (Date.now() - unread[what] < UNREAD_MS) return;
+    if (reported[what] === ok) return;
+    reported[what] = ok;
+    send({ type: "health", source: site.source, what, ok, path: location.pathname });
+    if (!ok) panel.status("bad", what === "posting" ? "can't read this posting" : "can't read these results");
   }
 
   let timer = null;
@@ -392,6 +414,7 @@
       if (!data) { card.innerHTML = `<h3>${esc(job.title || "This job")}</h3><p class="sub">Reading the posting…</p>`; return; }
       const j = data.job, m = data.mark, ai = j.ai, r = j.rules || {};
       card.innerHTML = `<h3>${esc(j.title)}</h3><p class="sub">${esc([j.company, j.location].filter(Boolean).join(" · "))}</p>
+        ${(j.fact_tags || []).length ? `<p class="sub">Asks for: ${esc(j.fact_tags.join(" · "))}</p>` : ""}
         <span class="score ${m.verdict}">${m.verdict} ${m.score}</span><span class="sub">${m.by === "ai" ? `Claude's assessment${ai.confidence ? ` · ${ai.confidence} confidence` : ""}` : "Match to your preferences, not your chances"}</span>
         ${ai ? `<p>${esc(ai.summary)}</p>${ai.interview_odds ? `<p><b>Realistic odds:</b> ${esc(ai.interview_odds)}</p>` : ""}${list("Strengths", ai.strengths, (x) => x.requirement + ": " + x.evidence)}
           ${list("Gaps", ai.gaps, (x) => `${x.requirement} (${x.severity}). ${x.how_to_address}`)}
@@ -422,6 +445,7 @@
         if (r && r.job) { data = { job: r.job, mark: r.mark }; marks.set(job.id, r.mark); tagFor(r.mark); applyStamps(); }
         else if (r && r.mark) { tagFor(r.mark); if (!auto) note = r.skipped || ""; else note = r.skipped || ""; }
         else note = (r && r.error) || "Claude couldn't be reached.";
+        if (r && r.limit) status("bad", "Claude limit reached");
         if (r && r.skipped && !data) refresh(); else render();
       });
     }

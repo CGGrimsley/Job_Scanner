@@ -5,8 +5,9 @@ const DEFAULTS = { server: "http://127.0.0.1:8766", token: "", enabled: true, no
 let queue = [];
 let timer = null;
 let retryDelay = 0;
-const session = { sent: 0, alerts: 0, error: "" };
+const session = { sent: 0, alerts: 0, error: "", problems: {} };
 const perTab = new Map(); // tabId -> Set of job ids the app has accepted from that page
+const pendingAuto = new Map(); // tabId -> the job an automatic Claude read is waiting on for that tab
 
 const settings = () => chrome.storage.local.get(DEFAULTS);
 
@@ -17,7 +18,7 @@ async function call(path, body) {
       ? { headers: { "X-Scanner-Token": s.token } }
       : { method: "POST", headers: { "Content-Type": "application/json", "X-Scanner-Token": s.token }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
-    return res.ok ? { ok: true, ...out } : { ok: false, error: out.error || `Job Scanner answered ${res.status}` };
+    return res.ok ? { ok: true, ...out } : { ...out, ok: false, error: out.error || `Job Scanner answered ${res.status}` };
   } catch (_) {
     return { ok: false, error: "Can't reach Job Scanner. Is the app running, and is its address in Settings right?" };
   }
@@ -40,9 +41,23 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   } else if (msg.type === "analyze") {
     settings().then((s) => {
       if (!s.enabled && msg.auto) return reply({ ok: false, error: "Paused." });
-      call("/api/capture/analyze", { source: msg.source, id: msg.id, auto: !!msg.auto, force: !!msg.force }).then(reply);
+      const job = { source: msg.source, id: msg.id };
+      if (msg.auto && tab != null) {
+        // a newer posting in this tab replaces the read still waiting for the old one
+        const prev = pendingAuto.get(tab);
+        if (prev && prev.id !== job.id) cancelRead(prev);
+        pendingAuto.set(tab, job);
+      }
+      call("/api/capture/analyze", { ...job, auto: !!msg.auto, force: !!msg.force }).then((r) => {
+        if (tab != null && pendingAuto.get(tab) === job) pendingAuto.delete(tab);
+        reply(r);
+      });
     });
     return true; // Claude takes a little while
+  } else if (msg.type === "health") {
+    const k = `${msg.source}:${msg.what}`;
+    if (msg.ok) delete session.problems[k]; else session.problems[k] = { source: msg.source, what: msg.what, path: msg.path };
+    call("/api/capture/health", { source: msg.source, what: msg.what, ok: !!msg.ok, path: msg.path });
   } else if (msg.type === "set-status") {
     call("/api/capture/status", { source: msg.source, id: msg.id, status: msg.status }).then(reply);
     return true;
@@ -98,8 +113,13 @@ function tell(tab, status) {
   chrome.action.setBadgeText({ tabId: tab, text: status.ok ? (status.count ? String(status.count) : "") : "off" });
   chrome.action.setBadgeBackgroundColor({ tabId: tab, color: status.ok ? "#0f6b4f" : "#cf222e" });
 }
-chrome.tabs.onRemoved.addListener((tab) => perTab.delete(tab));
-chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) perTab.delete(tab); });
+function cancelRead(job) { call("/api/capture/cancel", job); }
+function leftTab(tab) {
+  const job = pendingAuto.get(tab);
+  if (job) { pendingAuto.delete(tab); cancelRead(job); }
+}
+chrome.tabs.onRemoved.addListener((tab) => { perTab.delete(tab); leftTab(tab); });
+chrome.tabs.onUpdated.addListener((tab, change) => { if (change.status === "loading" && change.url) { perTab.delete(tab); leftTab(tab); } });
 
 chrome.notifications.onClicked.addListener((id) => { if (id.startsWith("https://")) chrome.tabs.create({ url: id }); });
 

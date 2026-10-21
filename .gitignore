@@ -12,3 +12,4 @@ profile.json
 jobs.json
 settings.json
 ai_usage.json
+node_modules/

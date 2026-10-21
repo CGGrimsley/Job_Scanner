@@ -1,0 +1,11 @@
+{
+  "name": "job-scanner-extension-tests",
+  "private": true,
+  "description": "Tests for the Chrome extension's page readers, run against saved job pages in tests/fixtures/pages.",
+  "scripts": {
+    "test": "node --test \"tests/extension/*.test.js\""
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

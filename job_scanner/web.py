@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, ai, jobs, profile, resume, store
+from . import __version__, ai, facts, health, jobs, profile, resume, store
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -86,17 +86,25 @@ def make_handler(ledger: jobs.Ledger):
                         "mark": jobs.mark_for(rec)}
             if ai.over_limit():
                 return {"skipped": "Today's Claude limit is used up (change it in Setup).", "mark": jobs.mark_for(rec)}
+            paused = ai.limited()
+            if paused:
+                return {"skipped": paused + " Ask Claude still works if you want to try.", "mark": jobs.mark_for(rec), "limited": True}
             if not rec.get("description"):
                 return {"skipped": "Open the posting so its full description is captured first.", "mark": jobs.mark_for(rec)}
         if profile.is_empty(p):
             raise BadRequest("Fill in your Profile first (target roles, skills and résumé) so Claude has something to go on.")
+        if not auto:
+            ai.cancel(key)  # an automatic read of this job still waiting in line would hold this one up
         with analyzing_lock:
             lock = analyzing.setdefault(key, threading.Lock())
         with lock:
             rec = ledger.get(key)
             if not force and jobs.ai_current(rec, fp):  # someone else just did it
                 return {"job": jobs.public(rec), "mark": jobs.mark_for(rec), "cached": True}
-            out = ai.analyze_job(rec, profile.for_prompt(p))
+            try:
+                out = ai.analyze_job(rec, profile.for_prompt(p), auto=auto, tag=key if auto else None)
+            except ai.AICancelled:
+                return {"skipped": "Not read: you moved on before Claude got to it.", "mark": jobs.mark_for(rec)}
             rec = ledger.set_analysis(key, out, fp)
         return {"job": jobs.public(rec), "mark": jobs.mark_for(rec)}
 
@@ -194,6 +202,8 @@ def make_handler(ledger: jobs.Ledger):
                 self._error("No such job.", HTTPStatus.NOT_FOUND)
             except resume.ResumeError as e:
                 self._error(str(e))
+            except ai.AILimitError as e:
+                self._json({"error": str(e), "limit": True, "resets": e.resets}, HTTPStatus.TOO_MANY_REQUESTS)
             except ai.AIError as e:
                 self._error(str(e), HTTPStatus.BAD_GATEWAY)
 
@@ -223,6 +233,7 @@ def make_handler(ledger: jobs.Ledger):
                 return self._json({"version": __version__, "profile": current_profile(), "ai": ai.describe_backend(),
                                    "settings": app_settings(), "counts": ledger.counts(), "sources": jobs.SOURCES,
                                    "statuses": jobs.STATUSES, "extension_version": extension_version(),
+                                   "site_health": health.load(), "degrees": facts.DEGREE_LABEL,
                                    "choices": {"remote": profile.REMOTE_CHOICES, "seniority": profile.SENIORITY_CHOICES,
                                                "job_types": profile.JOB_TYPE_CHOICES}})
             if path == "/api/token":
@@ -268,6 +279,10 @@ def make_handler(ledger: jobs.Ledger):
                     key = f"{data.get('source', '')}:{data.get('id', '')}"
                     rec = ledger.update(key, {"status": data.get("status", "")})
                     return self._json({"mark": jobs.mark_for(rec)})
+                if path == "/api/capture/cancel":
+                    return self._json({"cancelled": ai.cancel(f"{data.get('source', '')}:{data.get('id', '')}")})
+                if path == "/api/capture/health":
+                    return self._json({"health": health.report(data)})
                 return self._error("Not found", HTTPStatus.NOT_FOUND)
             if not self._same_origin():
                 return self._error("Forbidden", HTTPStatus.FORBIDDEN)

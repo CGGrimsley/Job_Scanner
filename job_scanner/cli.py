@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from . import __version__, ai, jobs, store, web
+from . import __version__, ai, health, jobs, store, web
 
 
 def _load_env(path: str = ".env") -> None:
@@ -56,7 +56,7 @@ def main(argv=None) -> int:
     if args.cmd == "doctor":
         b = ai.describe_backend()
         print(f"Data folder: {store.data_dir()}")
-        print(f"Claude Code installed: {'yes' if b['claude_installed'] else 'no'}")
+        print(f"Claude Code installed: {'yes (' + ai.claude_command() + ')' if b['claude_installed'] else 'no'}")
         print(f"Claude: {b['label']}")
         if b["backend"]:
             try:
@@ -66,5 +66,8 @@ def main(argv=None) -> int:
             except ai.AIError as e:
                 print(f"Test call failed: {e}")
                 return 1
+        for source, what, e in health.problems():
+            print(f"Can't read {jobs.SOURCES.get(source, source)} {'postings' if what == 'posting' else 'search results'} "
+                  f"since {e['at'][:16].replace('T', ' ')} (on {e['path'] or '?'})")
         return 0
     return 0

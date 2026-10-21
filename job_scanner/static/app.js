@@ -48,7 +48,18 @@ async function route() {
 addEventListener("hashchange", route);
 
 /* ---------- jobs ---------- */
-const filters = { text: "", source: "", verdict: "", sort: "score", status: "" };
+const filters = { text: "", source: "", verdict: "", sort: "score", status: "", remote: "", min_pay: "", max_years: "", degree: "", clearance: "" };
+const FILTER_SELECTS = ["source", "verdict", "sort", "remote", "max_years", "degree", "clearance"];
+const factTags = (j) => (j.fact_tags || []).map((t) => `<span class="tag fact">${esc(t)}</span>`).join("");
+const SITE_CHECK = { posting: "postings", cards: "search results" };
+function healthWarning() {
+  const bad = [];
+  for (const [src, checks] of Object.entries(S.site_health || {})) {
+    for (const [what, e] of Object.entries(checks)) if (!e.ok) bad.push(`${esc(S.sources[src] || src)} ${SITE_CHECK[what] || what} (since ${esc(e.at.slice(0, 10))})`);
+  }
+  return bad.length ? `<div class="card warn"><b>Job Scanner can't read ${bad.join(", ")}.</b> The site has probably changed its pages.
+    Open one of those pages, click the extension, then <b>Copy diagnostics for this page</b>, and paste it into an issue or to Claude so the reader can be fixed.</div>` : "";
+}
 function jobRow(j) {
   const b = j.best, r = j.rules || {};
   const why = j.ai ? j.ai.summary : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
@@ -58,7 +69,7 @@ function jobRow(j) {
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
@@ -72,26 +83,38 @@ async function showJobs() {
     <h1>Jobs</h1>
     <p class="lede">Every posting the extension has read, best fit first. ✦ marks Claude's assessment of the full posting against your résumé. The rest are quick matches to your preferences, which don't judge your chances.</p>
     ${profileEmpty() ? `<div class="card"><b>Start with your Profile.</b> Add the roles you want, your skills and your résumé so the scores mean something. <a href="#profile">Fill it in</a></div>` : ""}
+    ${healthWarning()}
+    ${S.ai.limited ? `<div class="card warn">${esc(S.ai.limited)} Automatic reads are paused until then.</div>` : ""}
     <div class="toolbar">
       <input type="search" id="q" placeholder="Search title, company, location" value="${esc(filters.text)}">
       <select id="source"><option value="">All sites</option>${sources}</select>
       <select id="verdict"><option value="">Any verdict</option><option>Apply</option><option>Consider</option><option>Skip</option></select>
-      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option></select>
+      <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option><option value="years">Fewest years asked</option></select>
       <a class="btn small" href="/api/jobs.csv">Export CSV</a>
     </div>
+    <div class="toolbar">
+      <select id="remote" title="Work arrangement"><option value="">Any arrangement</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option></select>
+      <input type="number" id="min_pay" min="0" step="5000" placeholder="Min pay listed, e.g. 70000" value="${esc(filters.min_pay)}" title="Only jobs whose listed pay reaches this (yearly; hourly counts at 2,080 hours). Jobs with no pay listed are hidden.">
+      <select id="max_years" title="Years of experience the posting asks for"><option value="">Any experience</option><option value="0">No years asked</option><option value="1">Up to 1 year</option><option value="2">Up to 2 years</option><option value="3">Up to 3 years</option><option value="5">Up to 5 years</option><option value="8">Up to 8 years</option></select>
+      <select id="degree" title="Degree the posting requires"><option value="">Any degree</option><option value="high_school">No degree required</option><option value="associate">Associate's at most</option><option value="bachelor">Bachelor's at most</option><option value="master">Master's at most</option></select>
+      <select id="clearance" title="Security clearance"><option value="">Any clearance</option><option value="none">No clearance</option><option value="obtainable">None, or can get one after hire</option></select>
+    </div>
+    <p class="note">Filters use what each posting says. A posting that doesn't mention years, a degree or a clearance isn't ruled out by those filters. "No degree required" includes postings that accept experience instead.</p>
     <div id="list" class="jobs"></div>`;
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).value = filters[k];
+  for (const k of FILTER_SELECTS) $("#" + k).value = filters[k];
   const load = async () => {
-    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
+    const q = new URLSearchParams(Object.entries(filters).filter(([, v]) => v !== ""));
     const out = await api("/api/jobs?" + q);
     const list = $("#list");
-    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : `<div class="empty card">
+    const filtered = FILTER_SELECTS.concat(["text", "min_pay"]).some((k) => k !== "sort" && filters[k] !== "");
+    list.innerHTML = out.jobs.length ? out.jobs.map(jobRow).join("") : filtered ? `<div class="empty card"><p><b>No jobs match these filters.</b></p></div>` : `<div class="empty card">
       <p><b>No jobs yet.</b></p><p>Install the Chrome extension (see <a href="#setup">Setup</a>), then browse LinkedIn, Indeed or NCWorks as usual. Jobs appear here as you scroll.</p></div>`;
     bindRows(list);
   };
   let t;
   $("#q").addEventListener("input", (e) => { filters.text = e.target.value; clearTimeout(t); t = setTimeout(load, 250); });
-  for (const k of ["source", "verdict", "sort"]) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
+  $("#min_pay").addEventListener("input", (e) => { filters.min_pay = e.target.value; clearTimeout(t); t = setTimeout(load, 400); });
+  for (const k of FILTER_SELECTS) $("#" + k).addEventListener("change", (e) => { filters[k] = e.target.value; load(); });
   await load();
 }
 
@@ -108,7 +131,7 @@ async function showJob(key) {
       <div style="flex:1">
         <h1>${esc(j.title)}</h1>
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
-        <div>${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
+        <div>${factTags(j)}${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
         <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
           <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button></div>
         <p class="note" id="ai-note">${ai && !ai_current ? "Your profile or this posting changed since Claude read it. Ask again for a fresh take." : ""}${!j.description ? " Only the search card was captured: open the posting with the extension on for Claude to read the full description." : ""}</p>
@@ -291,6 +314,11 @@ function showProfile() {
 }
 
 /* ---------- setup ---------- */
+function siteHealthTable() {
+  const rows = Object.entries(S.site_health || {}).flatMap(([src, checks]) => Object.entries(checks).map(([what, e]) =>
+    `<li><b>${esc(S.sources[src] || src)} ${esc(SITE_CHECK[what] || what)}</b>: ${e.ok ? "read fine" : `<span class="warn-text">not readable</span> on ${esc(e.path || "?")}`} <span class="note">(${esc(e.at.slice(0, 16).replace("T", " "))})</span></li>`));
+  return rows.length ? `<ul class="clean">${rows.join("")}</ul>` : `<p class="note">Nothing reported yet. Browse a job site with the extension on.</p>`;
+}
 async function showSetup() {
   const [{ token }, usage] = await Promise.all([api("/api/token"), api("/api/ai/usage")]);
   const a = S.ai, s = S.settings;
@@ -298,6 +326,7 @@ async function showSetup() {
     <div class="grid2">
       <div class="card"><h2>1. Claude, on your subscription</h2>
         <p>Status: <b>${esc(a.label)}</b></p>
+        ${a.limited ? `<p class="warn-text">${esc(a.limited)} Automatic reads are paused until then; Ask Claude still tries.</p>` : ""}
         ${a.backend === "cli" ? `<p class="note">Job Scanner runs Claude Code on this computer, so its analysis counts against your Claude Pro or Max plan's usage, not a separate bill.</p>` : `
         <ol class="steps">
           <li>Install Claude Code: <code>npm install -g @anthropic-ai/claude-code</code> (or the installer from claude.com/claude-code).</li>
@@ -324,6 +353,10 @@ async function showSetup() {
         <p class="note">Then browse LinkedIn, Indeed or NCWorks. Cards get a fit stamp, and a panel in the corner shows the posting you have open. On any other career site, click <b>Scan this page</b> in the extension.</p>
         <button class="btn small" id="rotate">Make a new token</button>
       </div>
+    </div>
+    <div class="card"><h2>Reading the job sites</h2>
+      ${siteHealthTable()}
+      <p class="note">The extension reports here when it opens a posting or a page of search results it can't read, which usually means the site changed its pages.</p>
     </div>
     <div class="card"><h2>Your data</h2>
       <p class="note">${S.counts.total} jobs, ${S.counts.analyzed} read by Claude. Everything is stored on this computer.</p>

@@ -63,3 +63,102 @@ def test_daily_limit(monkeypatch):
     assert not ai.over_limit()
     ai.log_usage("analyze", "cli", {})
     assert ai.over_limit()
+
+
+@pytest.fixture(autouse=True)
+def no_pause(monkeypatch):
+    monkeypatch.setattr(ai, "_paused", {"until": None, "resets": ""})
+    monkeypatch.setattr(ai, "RETRY_WAIT", 0)
+
+
+def cli_with(monkeypatch, *answers):
+    """Claude Code that gives these answers in turn: (payload, exit code)."""
+    monkeypatch.setenv("JOB_SCANNER_AI", "cli")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: "/usr/bin/claude")
+    calls = []
+
+    def run(cmd, **kw):
+        with open(f"{kw['cwd']}/_system.txt", encoding="utf-8") as fh:
+            calls.append({"cmd": cmd, "system": fh.read()})
+        payload, code = answers[min(len(calls), len(answers)) - 1]
+        return subprocess.CompletedProcess(cmd, code, stdout=json.dumps(payload), stderr="")
+    monkeypatch.setattr(ai.subprocess, "run", run)
+    return calls
+
+
+def test_windows_runs_the_real_exe_not_the_npm_shim(monkeypatch, tmp_path):
+    shim = tmp_path / "claude.cmd"
+    shim.write_text("@echo off")
+    exe = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(ai.os, "name", "nt")
+    monkeypatch.setattr(ai.shutil, "which", lambda name: str(shim) if name == "claude" else None)
+    assert ai.claude_command() == str(exe)
+    exe.unlink()
+    assert ai.claude_command() == str(shim)  # nothing better: the shim is still worth a try
+
+
+def test_system_prompt_goes_in_a_file(monkeypatch):
+    calls = cli_with(monkeypatch, ({"structured_output": {"ok": True}}, 0))
+    ai.ask_json('Line one\nLine two with "quotes" & <brackets> | %PATH%', "p", {})
+    cmd = calls[0]["cmd"]
+    assert cmd[0] == "/usr/bin/claude" and "--system-prompt" not in cmd
+    assert cmd[cmd.index("--system-prompt-file") + 1] == "_system.txt"
+    assert calls[0]["system"].startswith("Line one\nLine two")
+
+
+def test_a_hiccup_is_retried_once(monkeypatch):
+    calls = cli_with(monkeypatch, ({"is_error": True, "result": "API Error: 529 overloaded_error"}, 1),
+                     ({"structured_output": {"ok": True}}, 0))
+    assert ai.ask_json("s", "p", {}) == {"ok": True}
+    assert len(calls) == 2
+    calls = cli_with(monkeypatch, ({"is_error": True, "result": "API Error: 500 Internal server error"}, 1))
+    with pytest.raises(ai.AIError, match="tried twice"):
+        ai.ask_json("s", "p", {})
+    assert len(calls) == 2
+
+
+def test_a_used_up_plan_is_reported_and_pauses_auto_reads(monkeypatch):
+    calls = cli_with(monkeypatch, ({"is_error": True, "result": "5-hour limit reached · resets 3pm (America/New_York)"}, 1))
+    with pytest.raises(ai.AILimitError) as e:
+        ai.ask_json("s", "p", {})
+    assert len(calls) == 1  # not retried
+    assert e.value.resets.startswith("3pm") and "resets 3pm" in str(e.value)
+    assert "3pm" in ai.limited()
+    assert ai.describe_backend()["limited"]
+    cli_with(monkeypatch, ({"is_error": True, "result": "Claude AI usage limit reached|1900000000"}, 1))
+    with pytest.raises(ai.AILimitError):
+        ai.ask_json("s", "p", {})
+    assert ai._paused["until"].year == 2030
+
+
+def test_waiting_calls_go_in_priority_order():
+    import threading
+    import time
+    gate, order, started = ai._Gate(1), [], threading.Event()
+
+    def hold():
+        with gate.slot():
+            started.set()
+            time.sleep(0.3)
+
+    def call(name, auto, tag=None):
+        try:
+            with gate.slot(auto, tag):
+                order.append(name)
+        except ai.AICancelled:
+            order.append("cancelled " + name)
+
+    threads = [threading.Thread(target=hold)]
+    threads[0].start()
+    started.wait()
+    for name, auto, tag in (("old auto", True, None), ("new auto", True, None), ("asked", False, None), ("left", True, "x")):
+        t = threading.Thread(target=call, args=(name, auto, tag))
+        t.start()
+        threads.append(t)
+        time.sleep(0.03)
+    assert gate.cancel("x") == 1
+    for t in threads:
+        t.join(2)
+    assert order == ["cancelled left", "asked", "new auto", "old auto"]

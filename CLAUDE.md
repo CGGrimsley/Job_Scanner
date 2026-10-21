@@ -10,9 +10,10 @@ Chrome extension + local Python app (stdlib only) that scores job postings and g
 - The extension is passive: reads only what the user views; never clicks, applies, scrolls or fetches.
 
 ## Layout
-- `job_scanner/web.py` API + static app; `jobs.py` ledger; `scoring.py` rules score; `ai.py` Claude; `profile.py`; `resume.py`.
-- `extension/capture.js` per-site readers (LinkedIn, Indeed, NCWorks, Greenhouse/Lever/Workday, generic). Selectors are best-guess against live sites; use the popup's diagnostics to fix them.
+- `job_scanner/web.py` API + static app; `jobs.py` ledger; `scoring.py` rules score; `facts.py` years/degree/clearance for filters; `health.py` site-reading reports; `ai.py` Claude (queue, retry, plan-limit pause); `profile.py`; `resume.py`.
+- Claude Code is started via `ai.claude_command()`: on Windows that's the real `claude.exe` behind npm's `claude.cmd` shim. The system prompt goes in a file (`--system-prompt-file`), never on the command line.
+- `extension/capture.js` per-site readers (LinkedIn, Indeed, NCWorks, Greenhouse/Lever/Workday, generic). Selectors are best-guess against live sites; use the popup's diagnostics to fix them, and add the page to `tests/fixtures/pages`.
 - Bump `extension/manifest.json` version when the extension changes (the extension auto-reloads when the app's copy is newer).
 
 ## Tests
-`python -m pytest`
+`python -m pytest` and `npm test` (the extension's readers against saved pages, with jsdom)

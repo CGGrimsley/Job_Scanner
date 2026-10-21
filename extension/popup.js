@@ -12,6 +12,9 @@ chrome.runtime.sendMessage({ type: "status" }, (st) => {
   if (!st) return;
   $("sent").textContent = st.sent;
   $("alerts").textContent = st.alerts;
+  const names = { linkedin: "LinkedIn", indeed: "Indeed", ncworks: "NCWorks", greenhouse: "Greenhouse", lever: "Lever", workday: "Workday" };
+  const bad = Object.values(st.problems || {}).map((p) => `${names[p.source] || p.source} ${p.what === "posting" ? "postings" : "search results"}`);
+  say($("problems"), bad.length ? `Can't read ${bad.join(" or ")}: the site may have changed its pages. On that page, click Copy diagnostics below and send it in.` : "");
 });
 chrome.runtime.sendMessage({ type: "ping" }, (r) => {
   if (r && r.ok) {

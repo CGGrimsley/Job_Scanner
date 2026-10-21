@@ -80,3 +80,52 @@ def test_static_and_no_traversal(server):
     with urllib.request.urlopen(server + "/") as r:
         assert b"Job Scanner" in r.read()
     assert call(server + "/..%2f..%2fpyproject.toml")[0] == 404
+
+
+def _job_with_profile(server):
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "kind": "item", "title": "Data Analyst",
+                                             "description": "SQL " * 50}]}, tok)
+    call(server + "/api/profile", {"profile": {"target_titles": "Data Analyst", "skills": "SQL"}})
+    return tok
+
+
+def test_auto_reads_pause_while_the_plan_limit_is_used_up(server, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from job_scanner import ai
+    tok = _job_with_profile(server)
+    monkeypatch.setattr(ai, "_paused", {"until": datetime.now(timezone.utc) + timedelta(hours=1), "resets": "3pm"})
+    status, out = call(server + "/api/capture/analyze", {"source": "indeed", "id": "abc123def456", "auto": True}, tok)
+    assert status == 200 and out["limited"] and "3pm" in out["skipped"]
+
+
+def test_limit_error_is_a_429_with_the_reset_time(server, monkeypatch):
+    from job_scanner import ai
+
+    def used_up(*a, **k):
+        raise ai.AILimitError("Your Claude plan's usage limit is used up for now; it resets 3pm.", "3pm")
+    _job_with_profile(server)
+    monkeypatch.setattr(ai, "analyze_job", used_up)
+    status, out = call(server + "/api/jobs/indeed:abc123def456/analyze", {})
+    assert status == 429 and out["limit"] and out["resets"] == "3pm"
+
+
+def test_cancel_and_health_reports(server):
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    status, out = call(server + "/api/capture/cancel", {"source": "indeed", "id": "abc123def456"}, tok)
+    assert status == 200 and out["cancelled"] == 0
+    report = {"source": "linkedin", "what": "posting", "ok": False, "path": "/jobs/view/1/"}
+    assert call(server + "/api/capture/health", report)[0] == 401
+    status, out = call(server + "/api/capture/health", report, tok)
+    assert status == 200 and out["health"]["linkedin"]["posting"]["ok"] is False
+    assert call(server + "/api/capture/health", {"source": "evil", "what": "posting"}, tok)[0] == 400
+    _, state = call(server + "/api/state")
+    assert state["site_health"]["linkedin"]["posting"]["path"] == "/jobs/view/1/"
+
+
+def test_listing_filters_over_http(server):
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "kind": "item", "title": "Analyst",
+                                             "description": "8+ years of experience required. " * 5}]}, tok)
+    assert call(server + "/api/jobs?max_years=3")[1]["total"] == 0
+    assert call(server + "/api/jobs?max_years=10")[1]["jobs"][0]["fact_tags"] == ["8+ yrs"]

@@ -41,6 +41,9 @@ Job Scanner runs Claude Code on your computer (`claude -p`), so its work counts 
 - There's a **daily cap** on automatic calls (60 by default). Set both on the Setup page.
 - **Ask Claude** in the panel or the app always works on demand.
 - Each posting is read once. It's read again only if the posting or your profile changes.
+- Claude handles two requests at a time (`JOB_SCANNER_AI_PARALLEL`). Ask Claude and cover letters go to the front of the line. After them come automatic reads, newest first, so the posting you're looking at is read before ones you've scrolled past. When you close a tab or move to another posting, a read still waiting for the old one is dropped.
+- A brief hiccup (Claude overloaded, a 5xx error, a dropped connection) is retried once after a few seconds.
+- When your plan's usage limit runs out, the app says so, with the reset time when Claude gives one. Automatic reads pause until then. Ask Claude still tries.
 
 Job postings are untrusted text from the web. Claude runs with no tools, in an empty temporary folder, and is told to treat the posting as data. A posting can't make it do anything except answer the question.
 
@@ -56,11 +59,23 @@ No subscription? Install the `anthropic` package (`pip install anthropic`) and s
 | Greenhouse, Lever, Workday career pages | | ✓ |
 | Any other site | | **Scan this page** in the extension's popup. Select the description first if the page is unusual. |
 
-Sites change their pages often. If a site stops being read properly, open a search or posting, click the extension, then **Copy diagnostics for this page**, and paste the result into an issue. It contains public page data only.
+Sites change their pages often. When the extension opens a posting or a page of results and can't read it for several seconds, the panel turns red and says so. The extension's popup and the app's Jobs and Setup pages show the same warning, and so does `doctor`. To get it fixed, open that page, click the extension, then **Copy diagnostics for this page**, and paste the result into an issue. It contains public page data only.
+
+## Filtering jobs
+
+The Jobs page reads a few facts from each posting's own text, with no AI. You can filter on them:
+
+- **Arrangement**: remote, hybrid or on-site.
+- **Pay**: the listed pay reaches an amount you set. Jobs that don't list pay are hidden by this filter.
+- **Experience**: how many years the posting requires. "3-5 years" counts as 3. Years it only *prefers* don't count.
+- **Degree**: the lowest degree it requires. "No degree required" also includes postings that accept experience instead of a degree.
+- **Clearance**: hide jobs that need a security clearance, or keep only the ones where you can get one after you're hired.
+
+A posting that doesn't mention years, a degree or a clearance isn't ruled out by those filters. You can also sort by fewest years asked. The facts show as tags on each job and in the extension's panel. If your profile lists your years of experience, a posting that asks for much more gets a caution.
 
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json` and `ai_usage.json`. Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json` and `site_health.json`. Nothing personal is ever written into the repo.
 
 ## Commands
 
@@ -80,12 +95,23 @@ pip install pytest
 python -m pytest
 ```
 
+The extension's page readers are tested with Node against saved pages in `tests/fixtures/pages`:
+
+```
+npm install
+npm test
+```
+
+When a site changes, save one of its pages there (Ctrl+S, "Webpage, HTML only"). Add a case to `tests/extension/capture.test.js`, then fix `capture.js` until it passes.
+
 The code is laid out as follows:
 
 - `job_scanner/web.py`: the HTTP server and API.
 - `jobs.py`: the job ledger.
 - `scoring.py`: the quick rules score.
-- `ai.py`: Claude, its prompts and the honesty rubric.
+- `facts.py`: years, degree and clearance read from a posting, for the filters.
+- `health.py`: which sites the extension can still read.
+- `ai.py`: Claude, its prompts, the honesty rubric, and the queue, retry and limit handling.
 - `profile.py`: the profile.
 - `resume.py`: résumé import.
 - `static/`: the web app.
