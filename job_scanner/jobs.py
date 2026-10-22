@@ -20,9 +20,10 @@ from . import facts, learn, scoring, signals, store
 FILE = "jobs.json"
 STATUSES = ("", "saved", "applied", "interviewing", "offer", "rejected", "withdrawn", "dismissed")
 SOURCES = {"linkedin": "LinkedIn", "indeed": "Indeed", "ncworks": "NCWorks", "greenhouse": "Greenhouse",
-           "lever": "Lever", "workday": "Workday", "web": "Other site"}
+           "lever": "Lever", "workday": "Workday", "ashby": "Ashby", "smartrecruiters": "SmartRecruiters",
+           "usajobs": "USAJobs", "adzuna": "Adzuna", "web": "Other site"}
 TEXT_FIELDS = {"title": 300, "company": 200, "location": 200, "pay_text": 200, "job_type": 100, "posted_text": 100,
-               "description": 30000, "url": 1000}
+               "description": 30000, "url": 1000, "found_by": 120}
 _lock = threading.RLock()
 
 

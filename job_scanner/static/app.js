@@ -40,6 +40,7 @@ async function route() {
     if (name === "job") return await showJob(rest.join("/"));
     if (name === "tracker") return await showTracker();
     if (name === "insights") return await showInsights();
+    if (name === "watch") return await showWatch();
     if (name === "profile") return showProfile();
     if (name === "setup") return await showSetup();
     if (name === "discover") return await showDiscover();
@@ -661,6 +662,131 @@ function showProfile() {
     merge("skills", out.skills, ", ");
     if (out.years_experience != null && !f.years_experience.value) f.years_experience.value = out.years_experience;
   }
+}
+
+/* ---------- watching: automatic sources ---------- */
+const BOARD_NAMES = { greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", smartrecruiters: "SmartRecruiters" };
+async function showWatch() {
+  const w = await api("/api/watch");
+  const c = w.config, st = w.state, src = st.sources || {};
+  const when = (iso) => iso ? iso.slice(0, 16).replace("T", " ") : "never";
+  const runLine = (id) => {
+    const r = src[id];
+    if (!r) return `<span class="note">Not checked yet</span>`;
+    return r.ok ? `<span class="note">Checked ${esc(when(r.at))}: ${r.found} open, ${r.kept} worth a look, ${r.added} new</span>`
+      : `<span class="warn-text">${esc(r.error)}</span> <span class="note">(${esc(when(r.at))})</span>`;
+  };
+  const near = c.nearby;
+  const nearRow = (e, i) => {
+    const wb = e.watchable, watched = wb && c.boards.some((b) => b.provider === wb.provider && b.token.toLowerCase() === wb.token.toLowerCase());
+    return `<tr><td><b>${esc(e.name)}</b><div class="note">${esc(e.industry)}${e.size ? " · " + esc(e.size) : ""}</div><div class="note">${esc(e.why)}</div></td>
+      <td>${e.careers_url ? `<a href="${esc(e.careers_url)}" target="_blank" rel="noopener">Careers page</a>${e.link_ok === false ? ` <span class="warn-text" title="This link didn't open from here">(link didn't open)</span>` : ""}` : `<span class="note">No link known</span>`}</td>
+      <td>${wb ? `${esc(BOARD_NAMES[wb.provider])} · ${wb.jobs} open${wb.guessed ? `<div class="note">Found by guessing its name: <a href="${esc(boardLink(wb))}" target="_blank" rel="noopener">check it's theirs</a></div>` : ""}`
+        : `<span class="note">${esc(e.board && e.board !== "unknown" ? e.board : "Unknown board")}: open the careers page and browse; the extension reads it</span>`}</td>
+      <td>${wb ? (watched ? `<span class="tag st">Watching</span>` : `<button class="btn small" data-near="${i}">Watch</button>`) : ""}</td></tr>`;
+  };
+  view.innerHTML = `<h1>Watching</h1>
+    <p class="lede">Sources Job Scanner checks by itself every ${c.every_hours} hours while it's running. Jobs worth a look (quick score ${c.min_score}+, in your places) are added to your Jobs list like the ones you browse, and strong matches get a notification. LinkedIn and Indeed are never loaded automatically: their terms forbid it, so they come in through your alert emails below.</p>
+    <div class="actions" style="margin:0 0 14px"><button class="btn primary" id="run-now" ${w.running ? "disabled" : ""}>${w.running ? "Checking…" : "Check everything now"}</button>
+      <span class="note" style="align-self:center">Last checked: ${esc(when(st.last_run))}</span></div>
+
+    <div class="card"><h2>Employers near you</h2>
+      <p class="note">Claude lists the prominent employers around ${esc((near && near.places || []).join("; ") || w.where || "your places")} that hire for the roles you want, and where each one posts its jobs. The list comes from Claude's general knowledge, so it can be out of date. Every link and board is checked from this computer before it's shown as watchable.</p>
+      <div class="actions"><button class="btn" id="find-near" ${S.ai.backend ? "" : "disabled"}>${near ? "Find again" : "Find employers near me"}</button>${near ? `<span class="note" style="align-self:center">Found ${esc(when(near.at))}</span>` : ""}</div>
+      ${near && near.items.length ? `<table class="results"><thead><tr><th>Employer</th><th>Careers page</th><th>Job board</th><th></th></tr></thead><tbody>${near.items.map(nearRow).join("")}</tbody></table>` : ""}
+    </div>
+
+    <div class="card"><h2>Company job boards</h2>
+      <p class="note">Employers on Greenhouse, Lever, Ashby or SmartRecruiters publish their jobs for programs to read. Paste a link to one's board (from the Apply button on any of their jobs, e.g. <code>https://jobs.lever.co/acme</code>).</p>
+      <div class="token"><input id="board-url" placeholder="https://boards.greenhouse.io/acme"><button class="btn" id="add-board">Watch</button></div>
+      ${c.boards.length ? `<ul class="clean">${c.boards.map((b) => `<li><b>${esc(b.name)}</b> <span class="note">${esc(BOARD_NAMES[b.provider])} · <a href="${esc(boardLink(b))}" target="_blank" rel="noopener">${esc(b.token)}</a></span> ${runLine(`board:${b.provider}:${b.token}`)} <button class="btn small" data-remove="${esc(b.provider)}|${esc(b.token)}">Stop</button></li>`).join("")}</ul>` : `<p class="note">None yet.</p>`}
+    </div>
+
+    <div class="card"><h2>Job alert emails (LinkedIn and Indeed)</h2>
+      <p class="note">Set up job alerts on LinkedIn and Indeed for your searches; they email you new matches. Job Scanner reads those emails from your mailbox <b>read-only</b> (nothing is marked read, moved or deleted) and adds each job. Open one in Chrome and the extension reads the full posting. Gmail, Yahoo and iCloud need an <b>app password</b> (made in your account's security settings), not your normal password. Outlook.com and Hotmail don't allow this kind of sign-in.</p>
+      <label class="f"><input type="checkbox" id="em-on" ${c.email.enabled ? "checked" : ""}> Check my alert emails</label>
+      <div class="grid2"><label class="f">Mail server <input id="em-host" value="${esc(c.email.host)}" placeholder="imap.gmail.com"></label>
+        <label class="f">Folder <input id="em-folder" value="${esc(c.email.folder)}" placeholder="INBOX"></label>
+        <label class="f">Email address <input id="em-user" value="${esc(c.email.user)}" autocomplete="off"></label>
+        <label class="f">App password <small>${c.email.password_set ? "Saved. Leave blank to keep it." : "Stored only on this computer."}</small><input id="em-pass" type="password" autocomplete="new-password"></label></div>
+      <div class="actions"><button class="btn" id="em-test">Test</button><span id="em-note" class="note" style="align-self:center"></span></div>
+      <p>${runLine("email")}</p>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h2>USAJobs (federal jobs)</h2>
+        <p class="note">Free key from <a href="https://developer.usajobs.gov/apirequest/" target="_blank" rel="noopener">developer.usajobs.gov</a>; it's tied to the email you register with.</p>
+        <label class="f"><input type="checkbox" id="us-on" ${c.usajobs.enabled ? "checked" : ""}> Search USAJobs</label>
+        <label class="f">Registered email <input id="us-email" value="${esc(c.usajobs.email)}"></label>
+        <label class="f">API key <small>${c.usajobs.key_set ? "Saved. Leave blank to keep it." : ""}</small><input id="us-key" type="password" autocomplete="off"></label>
+        <p>${runLine("usajobs")}</p></div>
+      <div class="card"><h2>Adzuna (many job boards)</h2>
+        <p class="note">Free key from <a href="https://developer.adzuna.com/" target="_blank" rel="noopener">developer.adzuna.com</a>. Adzuna only gives a short preview, so these come in as cards: open one and the extension reads the full posting.</p>
+        <label class="f"><input type="checkbox" id="az-on" ${c.adzuna.enabled ? "checked" : ""}> Search Adzuna</label>
+        <label class="f">App ID <input id="az-id" value="${esc(c.adzuna.app_id)}"></label>
+        <label class="f">App key <small>${c.adzuna.app_key_set ? "Saved. Leave blank to keep it." : ""}</small><input id="az-key" type="password" autocomplete="off"></label>
+        <p>${runLine("adzuna")}</p></div>
+    </div>
+
+    <div class="card"><h2>Searches and schedule</h2>
+      <div class="grid2"><label class="f">Search for <small>One per line. Blank uses your target roles: ${esc(w.keywords.join(", ") || "none yet")}</small><textarea id="kw" style="min-height:80px">${esc(c.searches.keywords.join("\n"))}</textarea></label>
+        <div><label class="f">Near <small>Blank uses ${esc(w.where || "your first place")}</small><input id="where" value="${esc(c.searches.where)}"></label>
+          <label class="f">Within (miles) <input type="number" id="radius" min="1" max="200" value="${c.searches.radius_miles}"></label></div>
+        <label class="f">Check every (hours) <input type="number" id="every" min="1" max="48" value="${c.every_hours}"></label>
+        <label class="f">Keep jobs with a quick score of at least <input type="number" id="minscore-w" min="0" max="100" value="${c.min_score}"></label></div>
+      <div class="actions"><button class="btn primary" id="save-watch">Save</button></div>
+    </div>`;
+
+  const busy = (b, label) => { b.disabled = true; b.innerHTML = `<span class="spinner"></span>${label}`; };
+  $("#run-now").addEventListener("click", async (e) => {
+    busy(e.target, "Checking…");
+    await api("/api/watch/run", {});
+    const poll = setInterval(async () => {
+      const now = await api("/api/watch");
+      if (!now.running) { clearInterval(poll); toast("Checked."); if (location.hash === "#watch") showWatch(); }
+    }, 3000);
+  });
+  $("#find-near").addEventListener("click", async (e) => {
+    busy(e.target, "Claude is listing employers, then each one is checked (a minute or two)…");
+    try { await api("/api/watch/nearby", {}); await showWatch(); } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Find employers near me"; }
+  });
+  view.querySelectorAll("[data-near]").forEach((b) => b.addEventListener("click", async () => {
+    const e = near.items[+b.dataset.near];
+    try { await api("/api/watch/board", { provider: e.watchable.provider, token: e.watchable.token, name: e.name }); toast(`Watching ${e.name}.`); await showWatch(); }
+    catch (err) { toast(err.message); }
+  }));
+  $("#add-board").addEventListener("click", async (e) => {
+    busy(e.target, "Checking…");
+    try { const out = await api("/api/watch/board", { url: $("#board-url").value }); toast(`Watching: ${out.jobs} jobs open there now.`); await showWatch(); }
+    catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Watch"; }
+  });
+  view.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", async () => {
+    const [provider, token] = b.dataset.remove.split("|");
+    await api("/api/watch/board/remove", { provider, token });
+    await showWatch();
+  }));
+  const settingsBody = () => ({
+    every_hours: $("#every").value, min_score: $("#minscore-w").value,
+    searches: { keywords: $("#kw").value, where: $("#where").value, radius_miles: $("#radius").value },
+    email: { enabled: $("#em-on").checked, host: $("#em-host").value, folder: $("#em-folder").value, user: $("#em-user").value, password: $("#em-pass").value },
+    usajobs: { enabled: $("#us-on").checked, email: $("#us-email").value, key: $("#us-key").value },
+    adzuna: { enabled: $("#az-on").checked, app_id: $("#az-id").value, app_key: $("#az-key").value },
+  });
+  $("#save-watch").addEventListener("click", async () => {
+    try { await api("/api/watch", settingsBody()); toast("Saved."); await showWatch(); } catch (err) { toast(err.message); }
+  });
+  $("#em-test").addEventListener("click", async (e) => {
+    const note = $("#em-note");
+    note.innerHTML = `<span class="spinner"></span>Opening your mailbox…`;
+    try {
+      const out = await api("/api/watch/test-email", { email: settingsBody().email });
+      note.textContent = out.ok ? "Signed in. Save to start checking." : out.error;
+    } catch (err) { note.textContent = err.message; }
+  });
+}
+function boardLink(b) {
+  return { greenhouse: `https://job-boards.greenhouse.io/${b.token}`, lever: `https://jobs.lever.co/${b.token}`,
+    ashby: `https://jobs.ashbyhq.com/${b.token}`, smartrecruiters: `https://careers.smartrecruiters.com/${b.token}` }[b.provider];
 }
 
 /* ---------- setup ---------- */

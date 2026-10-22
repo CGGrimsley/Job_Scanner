@@ -18,7 +18,7 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 - **Home** shows your next setup step, what needs you today and the best new matches. A short guide walks new users through setup (Skip for now, or Don't show this again; it's on Setup if you want it back), and everything it asks for can be changed later.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
-It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so it works the way you browse and nothing more.
+It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so on those sites it works the way you browse and nothing more. The app can also check some sources by itself, but only ones that publish their jobs for programs to read (see Watching).
 
 ## Honest by design
 
@@ -82,9 +82,33 @@ Sites change their pages often. When the extension finds job cards or a posting 
 
 On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years of experience asked, degree and security clearance, which are read from each posting.
 
+## Watching (automatic sources)
+
+The **Watching** page sets up sources the app checks by itself, every few hours while it's running. Jobs worth a
+look are added to your Jobs list like the ones you browse. These are jobs with a quick score of 45 or more (adjustable)
+in one of your places, or remote if you take remote work. Strong matches get a desktop notification, and Claude reads
+the best few from each check (score 70 or more, at most 5) within your daily limit.
+
+- **Employers near you.** Claude lists the prominent employers around your Profile's places that hire for your roles,
+  with each one's careers page and the job board it uses. The list comes from Claude's general knowledge, so it can be
+  out of date. Every link and board is checked from your computer before it's offered. Employers whose boards publish
+  a feed get a **Watch** button. A board found only by guessing the employer's name is marked so you can check it's
+  really theirs. The rest are links to open in Chrome, and the extension reads them as you browse.
+- **Company job boards.** Greenhouse, Lever, Ashby and SmartRecruiters publish each employer's jobs through public
+  APIs. Paste a link to an employer's board to watch it.
+- **Job alert emails, for LinkedIn and Indeed.** Set up alerts on those sites, and the app reads the alert emails from
+  your mailbox over IMAP, **read-only** (nothing is marked read, moved or deleted). Gmail, Yahoo and iCloud need an
+  app password. Outlook.com and Hotmail don't allow this kind of sign-in. The app itself never loads LinkedIn or
+  Indeed.
+- **USAJobs** and **Adzuna**, with free keys from their developer sites. Searches use your target roles and first
+  place unless you set your own.
+
+Sites that don't allow programs are left out even when a feed exists. governmentjobs.com, which many cities, counties
+and states use, disallows every program but search engines in its robots.txt, so those employers stay as links.
+
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved) and `insights.json`. Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved), `insights.json`, and `watch.json` / `watch_state.json` (what's watched and how each check went; API keys and the mail app password for Watching are kept there on your computer only, and are never sent back to the page). Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
 
 ## Credits
 

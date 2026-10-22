@@ -150,3 +150,6 @@ details.more summary::-webkit-details-marker { display: none; }
 .tour-steps { padding-left: 20px; margin: 8px 0; } .tour-steps li { cursor: pointer; color: var(--muted); }
 .tour-steps li.on { color: var(--ink); font-weight: 700; } .tour-steps li.done { color: var(--apply); }
 .tour-foot { font-size: 13px; margin-top: 8px; }
+table.results { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+table.results th, table.results td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
+@media (max-width: 700px) { table.results thead { display: none; } table.results tr { display: grid; padding: 8px 0; } table.results td { border: 0; padding: 2px 0; } }
