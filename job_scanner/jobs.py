@@ -15,7 +15,7 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import facts, scoring, signals, store
+from . import facts, learn, scoring, signals, store
 
 FILE = "jobs.json"
 STATUSES = ("", "saved", "applied", "interviewing", "offer", "rejected", "withdrawn", "dismissed")
@@ -383,6 +383,7 @@ def rescore(rec: dict, profile: dict) -> None:
     rec["facts"] = facts.of(rec)
     r = scoring.score(rec, profile)
     rec["rules"] = r
+    learn.apply(rec, {w for t in profile.get("target_titles") or [] for w in scoring.words(t)})
     scam = [w["text"] for w in signals.warnings(rec) if w["level"] == "scam"]
     r["scam"] = bool(scam)
     if scam:

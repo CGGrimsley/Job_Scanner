@@ -59,3 +59,27 @@ def pairing_token(rotate: bool = False) -> str:
         if rotate or not s.get("token"):
             s = save_settings({"token": secrets.token_urlsafe(24)})
         return s["token"]
+
+
+BACKUP_KEEP = 14
+
+
+def backup(today: str | None = None) -> Path | None:
+    """Copy every JSON file in the data folder to backups/YYYY-MM-DD (once a day; the newest BACKUP_KEEP kept)."""
+    import shutil
+    from datetime import date
+
+    day = today or date.today().isoformat()
+    root = data_dir() / "backups"
+    dest = root / day
+    if dest.exists():
+        return None
+    files = [f for f in data_dir().glob("*.json")]
+    if not files:
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        shutil.copy2(f, dest / f.name)
+    for old in sorted(p for p in root.iterdir() if p.is_dir())[:-BACKUP_KEEP]:
+        shutil.rmtree(old, ignore_errors=True)
+    return dest

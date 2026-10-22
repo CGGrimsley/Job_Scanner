@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, advice, ai, companies, docx, feeds, health, insights, jobs, mail, nearby, pdf, places, profile, resume, signals, startup, store, watch
+from . import __version__, advice, ai, companies, discover, docx, feeds, health, insights, jobs, learn, mail, nearby, pdf, places, profile, resume, resume_check, signals, startup, store, watch
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -26,7 +26,7 @@ MAX_UPLOAD = 12_000_000
 DEFAULT_PORT = 8766
 
 SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60,
-                     "model_main": "", "model_light": "haiku", "model_auto": "main"}
+                     "model_main": "", "model_light": "haiku", "model_auto": "main", "tour_done": False}
 READ_PER_RUN = 5  # Claude reads per watch run, at most
 MODEL_CHOICES = ("", "haiku", "sonnet", "opus")
 
@@ -425,6 +425,7 @@ def make_handler(ledger: jobs.Ledger):
                 if not self._token_ok():
                     return self._error("Pair the extension: copy the token from Setup in the app.", HTTPStatus.UNAUTHORIZED)
                 if path == "/api/capture/ping":
+                    state["ext_seen"] = jobs.now_iso()
                     return self._json({"ok": True, "jobs": len(ledger.jobs), "extension_version": extension_version(),
                                        "profile_ready": not profile.is_empty(current_profile())})
                 if path == "/api/capture/due":  # the extension's daily follow-up reminder
@@ -451,12 +452,24 @@ def make_handler(ledger: jobs.Ledger):
             if path == "/api/state":
                 return self._json({"version": __version__, "profile": current_profile(), "ai": ai.describe_backend(),
                                    "settings": app_settings(), "counts": ledger.counts(), "sources": jobs.SOURCES,
-                                   "site_health": health.load(),
+                                   "site_health": health.load(), "extension_seen": state.get("ext_seen") or "",
                                    "statuses": jobs.STATUSES, "extension_version": extension_version(),
                                    "choices": {"remote": profile.REMOTE_CHOICES, "seniority": profile.SENIORITY_CHOICES,
                                                "job_types": profile.JOB_TYPE_CHOICES}})
             if path == "/api/token":
                 return self._json({"token": store.pairing_token()})
+            if path == "/api/discover":
+                p = current_profile()
+                roles = store.read_json("insights.json", {}).get("roles")
+                extra = [r["title"] for r in (roles or {}).get("roles", [])]
+                return self._json({"searches": discover.for_profile(p), "roles": roles,
+                                   "role_searches": discover.for_profile({**p, "target_titles": []}, extra),
+                                   "learned": learn.load()["rules"],
+                                   "suggestions": learn.suggestions(list(ledger.jobs.values()), p)})
+            if path == "/api/resume-check":
+                p = current_profile()
+                gaps = insights.skill_gaps(list(ledger.jobs.values()), p)
+                return self._json({"resumes": resume_check.check_all(p, gaps["missing_keywords"]), "jobs": gaps["jobs"]})
             if path == "/api/jobs":
                 recs = ledger.listing(q)
                 limit = int(q.get("limit") or 300)
@@ -566,6 +579,32 @@ def make_handler(ledger: jobs.Ledger):
                 if len(text) < 100:
                     raise BadRequest("Add your résumé first.")
                 return self._json(ai.suggest_from_text(text))
+            if path == "/api/discover/roles":
+                p = current_profile()
+                if not p["resumes"]:
+                    raise BadRequest("Add a résumé on your Profile first: suggestions come from it.")
+                liked = [r.get("title") or "" for r in ledger.jobs.values()
+                         if r.get("status") in ("saved", "applied", "interviewing", "offer") or (r.get("ai") or {}).get("verdict") == "Apply"]
+                roles = {**ai.adjacent_roles(profile.for_prompt(p), list(dict.fromkeys(liked))), "at": jobs.now_iso()}
+                saved = store.read_json("insights.json", {})
+                saved["roles"] = roles
+                store.write_json("insights.json", saved)
+                return self._json({"roles": roles, "role_searches": discover.for_profile({**p, "target_titles": []}, [r["title"] for r in roles["roles"]])})
+            if path == "/api/learn":
+                sid = str(data.get("id") or "")
+                try:
+                    if data.get("forget"):
+                        learn.forget(sid)
+                    else:
+                        learn.decide(sid, bool(data.get("accept")), str(data.get("label") or ""))
+                except ValueError as e:
+                    raise BadRequest(str(e)) from None
+                ledger.rescore_all(current_profile())
+                return self._json({"learned": learn.load()["rules"],
+                                   "suggestions": learn.suggestions(list(ledger.jobs.values()), current_profile())})
+            if path == "/api/backup":
+                where = store.backup(data.get("day") if isinstance(data.get("day"), str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", data["day"]) else None)
+                return self._json({"backup": str(where) if where else "", "folder": str(store.data_dir() / "backups")})
             if path == "/api/profile/about-draft":
                 text = str(data.get("resume") or profile.all_resume_text(current_profile()))
                 if len(text) < 100:
@@ -623,6 +662,8 @@ def make_handler(ledger: jobs.Ledger):
                         if data[k] not in MODEL_CHOICES:
                             raise BadRequest(f"{k} must be one of: haiku, sonnet, opus (or empty for the default).")
                         changes[k] = data[k]
+                if "tour_done" in data:
+                    changes["tour_done"] = bool(data["tour_done"])
                 if "model_auto" in data:
                     changes["model_auto"] = "light" if data["model_auto"] == "light" else "main"
                 if "start_with_windows" in data and startup.supported():
@@ -659,6 +700,14 @@ def make_handler(ledger: jobs.Ledger):
                 key, _, action = rest.rpartition("/")
                 if action == "analyze":
                     return self._json(analyze(key, force=bool(data.get("force"))))
+                if action == "interview":
+                    rec = ledger.get(key)
+                    if rec is None:
+                        raise KeyError(key)
+                    p = current_profile()
+                    read = companies.get(rec.get("company") or "")
+                    prep = ai.interview_prep(rec, profile.for_prompt(p), companies.context(read).lstrip("- "), rec.get("notes") or "")
+                    return self._json({"job": ledger.public(ledger.set_doc(key, "interview", prep))})
                 if action == "company":
                     rec = ledger.get(key)
                     if rec is None:
@@ -705,6 +754,14 @@ def serve(port: int = DEFAULT_PORT, host: str = "127.0.0.1", open_browser: bool 
     print(f"Job Scanner is running at {url}  (data: {store.data_dir()})")
     print(f"Claude: {b['label']}" + ("" if b["backend"] else "  -- install Claude Code and sign in to turn on AI guidance"))
     print("Ctrl-C to stop.")
+    def nightly():
+        while True:
+            try:
+                store.backup()
+            except OSError as e:
+                print(f"Backup failed: {e}")
+            threading.Event().wait(3600)
+    threading.Thread(target=nightly, daemon=True).start()
     if open_browser:
         import webbrowser
 

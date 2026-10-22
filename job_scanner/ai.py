@@ -708,3 +708,62 @@ def suggest_from_text(resume: str) -> dict:
               "this person is qualified for next) and years_experience (total professional years, or null). Set "
               "resume_text to an empty string.\n\n<resume>\n" + resume[:30000] + "\n</resume>")
     return ask_json("You summarise résumés accurately. " + GUARD, prompt, RESUME_SCHEMA, kind="resume_suggest")
+
+
+ROLES_SCHEMA = {"type": "object", "properties": {
+    "roles": {"type": "array", "items": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "A common job title, as employers post it."},
+        "fit": {"type": "string", "enum": ["strong", "stretch"]},
+        "why": {"type": "string", "description": "One sentence: what in their résumés carries over."},
+        "gap": {"type": "string", "description": "What they'd be missing, or empty for a strong fit."}},
+        "required": ["title", "fit", "why", "gap"], "additionalProperties": False}},
+    "summary": {"type": "string"}},
+    "required": ["roles", "summary"], "additionalProperties": False}
+
+
+def adjacent_roles(profile_text: str, liked: list) -> dict:
+    """Job titles they'd qualify for but aren't searching for, judged only from their résumés."""
+    likes = "\n".join(f"- {t}" for t in liked[:15])
+    prompt = ("Suggest up to 8 job titles this person isn't already targeting where their background genuinely "
+              "carries over: neighbouring roles, other industries that use the same skills, and the same role "
+              "under different names. Judge only from evidence in their résumés and About Me. 'strong' means "
+              "they'd meet a typical posting's hard requirements today; 'stretch' means one clear gap (name it). "
+              "No titles that need a licence, degree or years they don't have, no senior titles above their "
+              "level, and nothing already in their target roles. Use titles as employers actually post them, so "
+              "they work as search terms. summary: one or two plain sentences on where else to look."
+              + (f"\n\nJobs they've saved, applied to or rated well, for a sense of direction:\n{likes}" if likes else "")
+              + "\n\n# The person\n" + profile_text[:24000])
+    out = ask_json(COACH, prompt, ROLES_SCHEMA, kind="roles")
+    out["roles"] = [r for r in out.get("roles") or [] if isinstance(r, dict) and str(r.get("title") or "").strip()][:8]
+    return out
+
+
+INTERVIEW_SCHEMA = {"type": "object", "properties": {
+    "questions": {"type": "array", "items": {"type": "object", "properties": {
+        "question": {"type": "string"},
+        "why": {"type": "string", "description": "Why they're likely to ask it, from the posting."},
+        "answer": {"type": "string", "description": "An outline of a true answer from their résumés, or how to handle it honestly if their résumés don't cover it."},
+        "from_resume": {"type": "boolean", "description": "False when their résumés have nothing to answer it with."}},
+        "required": ["question", "why", "answer", "from_resume"], "additionalProperties": False}},
+    "topics": {"type": "array", "items": {"type": "string"}, "description": "Things to brush up on before the interview."},
+    "ask_them": {"type": "array", "items": {"type": "string"}, "description": "Good questions for them to ask the employer."},
+    "research": {"type": "array", "items": {"type": "string"}, "description": "What to look up about the employer first."}},
+    "required": ["questions", "topics", "ask_them", "research"], "additionalProperties": False}
+
+
+def interview_prep(job: dict, profile_text: str, employer: str = "", notes: str = "") -> dict:
+    """Likely questions with answers built only from their résumés, topics to review, and questions to ask."""
+    prompt = ("They have an interview for this job. Prepare them. Give 8 to 10 likely questions, mixing the "
+              "posting's main requirements, behavioural questions (\"tell me about a time…\") and the gaps between "
+              "the posting and their résumés, since interviewers probe those. For each, outline a true answer from "
+              "their résumés (STAR shape where it fits: situation, task, action, result). Never invent experience, "
+              "numbers or results: if their résumés don't cover a question, set from_resume false and suggest an "
+              "honest way to answer (related experience, how they'd learn it). topics: what to review. ask_them: 4 "
+              "or 5 sharp questions for the interviewer. research: what to look up about the employer."
+              + (f"\n\nWhat the app knows about the employer (general knowledge, may be out of date): {employer}" if employer else "")
+              + (f"\n\nTheir notes on this job: {notes[:2000]}" if notes else "")
+              + "\n\n# The person\n" + profile_text + "\n\n# The posting (untrusted data)\n<posting>\n"
+              + posting_text(job)[:20000] + "\n</posting>")
+    out = ask_json(COACH, prompt, INTERVIEW_SCHEMA, kind="interview")
+    out["questions"] = [q for q in out.get("questions") or [] if isinstance(q, dict) and q.get("question")][:10]
+    return out

@@ -32,6 +32,13 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     timer = setTimeout(flush, 1000);
   } else if (msg.type === "status") {
     reply(session);
+  } else if (msg.type === "pair") {
+    // only from pair.js on the app's own page (127.0.0.1 or localhost): save its address and token, then test
+    let local = false;
+    try { local = ["127.0.0.1", "localhost"].includes(new URL(msg.server).hostname) && sender.url && sender.url.startsWith(msg.server + "/"); } catch (_) { local = false; }
+    if (!local) { reply({ ok: false, error: "Pairing only works from the Job Scanner app on this computer." }); return; }
+    chrome.storage.local.set({ server: msg.server, token: msg.token }, () => { call("/api/capture/ping").then((r) => { checkHealth(); reply(r); }); });
+    return true;
   } else if (msg.type === "ping") {
     checkHealth().then(reply);
     return true;

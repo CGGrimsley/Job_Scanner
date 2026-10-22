@@ -27,12 +27,13 @@ async function loadState() {
   const pill = $("#ai-pill");
   pill.textContent = S.ai.backend ? `Claude: ${S.ai.backend === "cli" ? "your subscription" : "API key"}` : "Claude: not set up";
   pill.className = "pill" + (S.ai.backend ? " ok" : "");
+  if (typeof tour !== "undefined") tour.refresh();
 }
 const profileEmpty = () => !(S.profile.target_titles.length || S.profile.skills.length || S.profile.resumes.length || S.profile.about_me);
 
 /* ---------- routing ---------- */
 async function route() {
-  const hash = decodeURIComponent(location.hash.slice(1)) || (S && profileEmpty() ? "profile" : "jobs");
+  const hash = decodeURIComponent(location.hash.slice(1)) || "home";
   const [name, ...rest] = hash.split("/");
   document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === (name === "job" ? "jobs" : name)));
   try {
@@ -42,7 +43,9 @@ async function route() {
     if (name === "watch") return await showWatch();
     if (name === "profile") return showProfile();
     if (name === "setup") return await showSetup();
-    return await showJobs();
+    if (name === "discover") return await showDiscover();
+    if (name === "jobs") return await showJobs();
+    return await showHome();
   } catch (e) {
     view.innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`;
   }
@@ -171,10 +174,16 @@ async function showJob(key) {
         <h1>${esc(j.title)}</h1>
         <div class="m">${esc([j.company, j.location, j.pay_text || (r.pay_max ? "up to " + money(r.pay_max) : ""), j.job_type].filter(Boolean).join(" · "))}</div>
         <div>${factTags(j)}${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${(j.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(j.source_name)}</span>${j.posted_text ? `<span class="tag">${esc(j.posted_text)}</span>` : ""}${j.applicants ? `<span class="tag">${j.applicants}+ applicants</span>` : ""}</div>
-        <div class="actions">${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
-          <button class="btn primary" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
-          <button class="btn" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
-          <a class="btn" href="#" id="to-tailor">Tailored résumé</a><a class="btn" href="#" id="to-letter">Cover letter</a></div>
+        <div class="actions">${(() => {
+          // one main action for where this job is: read it, apply, or get ready for the interview
+          const stage = ["interviewing", "offer"].includes(j.status) ? "prep" : ["applied", "rejected", "withdrawn"].includes(j.status) ? "applied" : ai ? "apply" : "read";
+          const cls = (k) => "btn" + (k === stage ? " primary" : "");
+          return `${stage === "prep" ? `<a class="btn primary" href="#" id="to-prep">Prepare for the interview</a>` : ""}
+            <button class="${cls("read")}" id="analyze">${ai ? "Ask Claude again" : "Ask Claude about this job"}</button>
+            <button class="${cls("apply")}" id="easy-apply" title="Claude writes the tailored résumé, cover letter and answers to the likely questions in one go, and saves the job to your tracker">${j.packet ? "Easy apply again" : "Easy apply"}</button>
+            ${j.url ? `<a class="${cls("applied")}" href="${esc(j.url)}" target="_blank" rel="noopener">Open posting</a>` : ""}
+            <details class="more"><summary class="btn">More</summary><div class="more-menu"><a href="#" id="to-tailor">Tailored résumé</a><a href="#" id="to-letter">Cover letter</a>${stage === "prep" ? "" : `<a href="#" id="to-prep">Interview prep</a>`}</div></details>`;
+        })()}</div>
         ${(j.also_on || []).length ? `<p class="note">Also posted on ${j.also_on.map((o) => `<a href="#job/${encodeURIComponent(o.key)}">${esc(o.source)}</a>${o.status ? ` (${esc(STATUS_LABEL[o.status])})` : ""}`).join(", ")}. They're shown as one job.</p>` : ""}
         ${j.status_elsewhere ? `<p class="note"><b>You've marked this job ${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}.</b></p>` : ""}
         <p class="note" id="ai-note">${ai && !ai_current ? "Your profile or this posting changed since Claude read it. Ask again for a fresh take." : ""}${!j.description ? " Only the search card was captured: open the posting with the extension on for Claude to read the full description." : ""}</p>
@@ -200,6 +209,7 @@ async function showJob(key) {
           <label class="f">Notes <textarea id="notes" placeholder="Recruiter name, referral, what you sent…">${esc(j.notes || "")}</textarea></label>
           <div class="actions"><button class="btn primary" id="save">Save</button><button class="btn danger" id="del">Delete job</button></div>
         </div>
+        <div class="card" id="interview">${interviewHtml(key, j)}</div>
         <div class="card">
           <h2 id="tailor-card">Tailored résumé</h2>
           <p class="note">A version of your résumé aimed at this job: reordered and reworded in the posting's terms, using only what your résumés already say.</p>
@@ -266,6 +276,8 @@ async function showJob(key) {
   const copy = $("#copy-letter");
   if (copy) copy.addEventListener("click", async () => { await navigator.clipboard.writeText(j.cover_letter.text); toast("Copied."); });
   $("#to-tailor").addEventListener("click", (e) => { e.preventDefault(); $("#tailor-card").scrollIntoView({ behavior: "smooth" }); });
+  $("#to-prep").addEventListener("click", (e) => { e.preventDefault(); $("#interview-card").scrollIntoView({ behavior: "smooth" }); });
+  bindInterview(key);
   if (j.status) bindTodo(view, todo.map((n) => ({ ...n, key })), () => showJob(key));
   $("#tailor").addEventListener("click", async (e) => {
     const btn = e.target;
@@ -307,6 +319,7 @@ async function showInsights() {
   const band = (q) => q && q.n ? `${money(q.low)}–${money(q.high)} <small>median ${money(q.median)}, ${q.n} posting${q.n === 1 ? "" : "s"}${q.n < pay.min_sample ? ", too few to rely on" : ""}</small>` : `<span class="note">none listed yet</span>`;
   view.innerHTML = `<h1>Insights</h1><p class="lede">What all your jobs say together, counted from your own Job Scanner. Small numbers are labelled as small.</p>
     ${weekHtml(d.week)}
+    <div class="card" id="resume-check"><h2>Résumé check</h2><p class="note"><span class="spinner"></span>Checking…</p></div>
     <div class="card"><h2>Are the ratings right?</h2>
       <p>${esc(a.note)}</p>
       <table class="tbl"><thead><tr><th>Rated when you applied</th><th>Applied</th><th>Interviews</th><th>Rejected</th><th>No reply</th><th>Waiting</th><th>Interview rate</th></tr></thead>
@@ -329,6 +342,7 @@ async function showInsights() {
     catch (err) { toast(err.message); e.target.textContent = "Ask Claude for a realistic plan"; }
     e.target.disabled = false;
   });
+  resumeCheckCard();
 }
 function planHtml(p) {
   const EFFORT = { quick: "Quick", weeks: "Weeks", months: "Months", "needs experience": "Needs on-the-job experience" };
@@ -521,6 +535,7 @@ function showProfile() {
       const out = await api("/api/profile", { profile: collect() });
       S.profile = out.profile;
       toast(`Saved. ${out.counts.total} jobs rescored.`);
+      tour.refresh();
     } catch (err) { toast(err.message); }
   });
   // locations: chips, added from a type-ahead list of real places (typing your own and pressing Enter works too)
@@ -819,6 +834,10 @@ async function showSetup() {
         <p class="note">Used today: ${usage.today.calls} calls (${usage.today.tokens.toLocaleString()} tokens). This week: ${usage.week.calls} calls.</p>
       </div>
       <div class="card"><h2>2. The Chrome extension</h2>
+        <div id="ext-connect">${extensionInstalled() ? `<p><b>The extension is installed${S.extension_seen ? " and connected" : ""}.</b> ${S.extension_seen ? "" : "Click below to connect it to this app."}</p>
+          <button class="btn ${S.extension_seen ? "" : "primary"}" id="pair">${S.extension_seen ? "Connect it again" : "Connect the extension"}</button> <span class="note" id="pair-out"></span>`
+          : `<p class="note">Not installed in this browser yet. Add it with the steps below; then reload this page and one click connects it.</p>`}</div>
+        <details ${extensionInstalled() ? "" : "open"}><summary>Install it, or connect by hand</summary>
         <ol class="steps">
           <li>Open <code>chrome://extensions</code> and turn on <b>Developer mode</b>.</li>
           <li>Click <b>Load unpacked</b> and choose the <code>extension</code> folder inside Job Scanner.</li>
@@ -826,14 +845,36 @@ async function showSetup() {
         </ol>
         <div class="token"><input id="token" readonly value="${esc(token)}"><button class="btn" id="copy">Copy</button></div>
         <p class="note">Then browse LinkedIn, Indeed or NCWorks. Cards get a fit stamp, and a panel in the corner shows the posting you have open. On any other career site, click <b>Scan this page</b> in the extension.</p>
-        <button class="btn small" id="rotate">Make a new token</button>
+        <button class="btn small" id="rotate">Make a new token</button></details>
       </div>
     </div>
+    <div class="card"><h2>Getting started guide</h2><p class="note">The step-by-step guide from your first visit. Everything in it can be changed any time.</p><button class="btn" id="guide-again">Show the guide</button></div>
+    <div class="card"><h2>Your data is backed up</h2><p class="note">Every day the app copies your data to a <code>backups</code> folder inside your data folder (the last 14 days are kept).</p><button class="btn small" id="backup-now">Back up now</button> <span class="note" id="backup-out"></span></div>
     <div class="card"><h2>Can the extension read each site?</h2>${healthList()}</div>
     <div class="card"><h2>Your data</h2>
       <p class="note">${S.counts.total} jobs, ${S.counts.analyzed} read by Claude. Everything is stored on this computer.</p>
       <div class="actions"><a class="btn" href="/api/jobs.csv">Export CSV</a><button class="btn" id="rescore">Rescore all jobs</button><button class="btn danger" id="clear">Clear jobs I'm not tracking</button></div>
     </div>`;
+  $("#guide-again").addEventListener("click", () => tour.open(true));
+  $("#backup-now").addEventListener("click", async () => {
+    const out = await api("/api/backup", {}).catch((e) => ({ error: e.message }));
+    $("#backup-out").textContent = out.error || (out.backup ? `Saved to ${out.backup}` : `Today's backup is already in ${out.folder}`);
+  });
+  const pair = $("#pair");
+  if (pair) pair.addEventListener("click", () => {
+    pair.disabled = true;
+    $("#pair-out").textContent = "Connecting…";
+    const done = (e) => {
+      if (e.source !== window || !e.data || e.data.type !== "job-scanner-paired") return;
+      removeEventListener("message", done);
+      pair.disabled = false;
+      $("#pair-out").textContent = e.data.ok ? "Connected. Browse LinkedIn or Indeed and jobs will appear." : e.data.error || "It didn't connect.";
+      if (e.data.ok) { S.extension_seen = new Date().toISOString(); tour.refresh(); }
+    };
+    addEventListener("message", done);
+    postMessage({ type: "job-scanner-pair", token: $("#token").value }, location.origin);
+    setTimeout(() => { if (pair.disabled) { pair.disabled = false; $("#pair-out").textContent = "No answer from the extension. Reload this page and try again."; } }, 8000);
+  });
   $("#copy").addEventListener("click", async () => { await navigator.clipboard.writeText($("#token").value); toast("Copied."); });
   $("#test-ai").addEventListener("click", async (e) => {
     e.target.disabled = true;
@@ -865,4 +906,4 @@ async function showSetup() {
   });
 }
 
-loadState().then(route).catch((e) => { view.innerHTML = `<div class="card">Can't reach Job Scanner: ${esc(e.message)}</div>`; });
+loadState().then(route).then(() => setTimeout(() => tour.open(false), 400)).catch((e) => { view.innerHTML = `<div class="card">Can't reach Job Scanner: ${esc(e.message)}</div>`; });
