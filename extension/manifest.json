@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Job Scanner",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Reads the job postings you browse on LinkedIn, Indeed, NCWorks and company career pages, and shows how well each one fits you, with guidance from Claude.",
   "icons": {
     "16": "icons/icon16.png",
@@ -9,11 +9,28 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "notifications", "alarms", "activeTab", "scripting"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Job Scanner" },
+  "permissions": [
+    "storage",
+    "notifications",
+    "alarms",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Job Scanner"
+  },
   "options_page": "options.html",
   "content_scripts": [
     {
@@ -27,7 +44,19 @@
         "https://*.lever.co/*",
         "https://*.myworkdayjobs.com/*"
       ],
-      "js": ["capture.js"],
+      "js": [
+        "capture.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "pair.js"
+      ],
       "run_at": "document_idle"
     }
   ]

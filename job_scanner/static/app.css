@@ -127,3 +127,26 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 .warnings { border-left: 4px solid var(--consider); }
 @media (max-width: 760px) { .tbl { display: block; overflow-x: auto; } }
 .warn-text { color: var(--consider); font-weight: 600; }
+
+/* home, discover, guide */
+.strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.strip-item { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 600; }
+.strip-item.ok { color: var(--apply); border-color: var(--apply); background: var(--apply-bg); }
+.strip-item.no { color: var(--consider); border-color: var(--consider); background: var(--consider-bg); }
+.card.next { border-left: 4px solid var(--brand); }
+.card.next h2 a { color: var(--ink); text-decoration: none; }
+.card.next p.note:first-child { margin: 0; text-transform: uppercase; letter-spacing: .04em; font-size: 12px; }
+.tag.fit { color: var(--apply); border-color: var(--apply); }
+.tag.warn { color: var(--consider); border-color: var(--consider); }
+.roles li, .learn li { margin: 8px 0; }
+.searches td { vertical-align: top; padding: 8px 6px; } .searches .btn { margin: 2px 0; }
+details.q { border-top: 1px solid var(--line); padding: 8px 0; } details.q summary { cursor: pointer; font-weight: 600; }
+details.more { display: inline-block; position: relative; } details.more summary { list-style: none; cursor: pointer; }
+details.more summary::-webkit-details-marker { display: none; }
+.more-menu { position: absolute; z-index: 4; margin-top: 4px; min-width: 180px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.12); }
+.more-menu a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; } .more-menu a:hover { background: var(--soft); }
+.tour { position: fixed; left: 16px; bottom: 16px; z-index: 20; width: min(360px, calc(100vw - 32px)); box-shadow: 0 10px 30px rgba(0,0,0,.2); margin: 0; }
+.tour-head { display: flex; justify-content: space-between; align-items: baseline; }
+.tour-steps { padding-left: 20px; margin: 8px 0; } .tour-steps li { cursor: pointer; color: var(--muted); }
+.tour-steps li.on { color: var(--ink); font-weight: 700; } .tour-steps li.done { color: var(--apply); }
+.tour-foot { font-size: 13px; margin-top: 8px; }

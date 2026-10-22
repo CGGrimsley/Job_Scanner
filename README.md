@@ -11,6 +11,11 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 - **PDF and Word downloads** for tailored résumés and cover letters.
 - **Tracker to-dos.** From the dates you record, the tracker tells you when to apply, reach out to someone at the company, follow up (after a week, again after two), prepare for an interview, send a thank-you, and answer an offer. Claude drafts each message for you to edit.
 - **Several résumés.** Claude reads them all as evidence of what you've done, and it tells you which one to send for each job.
+- **Discover.** Search links tuned to surface the postings worth seeing (newest first, posted in the last day or week, your remote/hybrid/on-site choice, your avoid-list words left out) on LinkedIn, Indeed, USAJobs and Google Jobs, for your target roles and for roles Claude says your résumés already fit but you aren't searching for. They open in your browser; the app never searches job sites itself.
+- **Learns from what you pass on.** When you keep passing on the same employer, title word, level, on-site jobs or staffing agencies, Discover suggests lowering their scores. Nothing changes until you approve it, every lowered score says why, and you can undo it.
+- **Interview prep** for any job: likely questions, what in your résumé answers each one (or that nothing does), and questions to ask them.
+- **Résumé check** on Insights: what application systems trip on (missing headings, dates, contact details, length) and the keywords your target jobs keep asking for that your résumés never mention.
+- **Home** shows your next setup step, what needs you today and the best new matches. A short guide walks new users through setup (Skip for now, or Don't show this again; it's on Setup if you want it back), and everything it asks for can be changed later.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
 It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so it works the way you browse and nothing more.
@@ -29,6 +34,8 @@ The guidance is meant to be objective, not encouraging:
 
 You need Python 3.9+, Chrome, and (for the AI guidance) a Claude Pro or Max subscription.
 
+**Windows, the quick way:** download the code, then double-click `Install Job Scanner.bat`. It installs Python and Node.js if they're missing (via winget), installs Claude Code, sets the app to start when you sign in, puts a shortcut on the desktop and opens the app. Then run `claude` once to sign in, and do step 5 below.
+
 1. **Get the code:** clone this repo, or download it as a ZIP and unzip it.
 2. **Start the app:** double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux). You can also run `python -m job_scanner serve --open`. The app opens at http://127.0.0.1:8766.
 3. **Fill in your Profile, résumé first.** Upload or paste your résumé (PDF, Word or text). If you keep several targeted versions, add them all. Claude suggests job titles and skills from them, and you can edit those and add your own. Then pick your locations: start typing a city or state and choose it from the list. Finish with your minimum pay, your dealbreakers and your About Me (**Draft it from my résumés** writes a first version from your résumés alone, for you to edit, and lists what only you can add). The more Claude knows, the better its advice.
@@ -36,7 +43,7 @@ You need Python 3.9+, Chrome, and (for the AI guidance) a Claude Pro or Max subs
    - Install Claude Code: `npm install -g @anthropic-ai/claude-code` (or the installer from claude.com/claude-code). It needs Node.js 22 or newer: check with `node -v`, and on Windows update with `winget install OpenJS.NodeJS.LTS`.
    - Run `claude` once in a terminal and sign in with your Claude account. If PowerShell says *running scripts is disabled*, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first (or type `claude.cmd`).
    - Restart Job Scanner. Run `python -m job_scanner doctor` to check: it should say *Claude: Your Claude subscription (Claude Code)* and *Test call: OK*.
-5. **Add the extension:** open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the `extension` folder. Then open the extension's **Settings**, paste the pairing token from the app's **Setup** page, and click **Save & test**.
+5. **Add the extension:** open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose the `extension` folder. Then click **Connect the extension** on the app's **Setup** page (or paste the pairing token from Setup into the extension's **Settings** and click **Save & test**).
 
 Then browse jobs as usual.
 
@@ -77,7 +84,7 @@ On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years
 
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) and `site_health.json`. Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved) and `insights.json`. Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
 
 ## Credits
 
@@ -91,6 +98,7 @@ python -m job_scanner doctor                         # check Claude and the data
 python -m job_scanner token [--rotate]               # print (or replace) the extension pairing token
 python -m job_scanner reset [--all] [-y]             # clear captured jobs (keeps tracked ones unless --all)
 python -m job_scanner startup [on|off]               # start the app when you sign in to Windows
+python -m job_scanner backup                         # copy your data into backups/ now
 ```
 
 ## Development

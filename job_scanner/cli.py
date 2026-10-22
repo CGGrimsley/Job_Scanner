@@ -1,4 +1,4 @@
-"""Command line: `python -m job_scanner serve | token | reset | doctor | startup`."""
+"""Command line: `python -m job_scanner serve | token | reset | doctor | startup | backup`."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ def main(argv=None) -> int:
     r.add_argument("--all", action="store_true", help="also clear jobs you're tracking")
     r.add_argument("-y", action="store_true", help="don't ask")
     sub.add_parser("doctor", help="check Claude and the data folder")
+    sub.add_parser("backup", help="copy your data to backups/<today> in the data folder")
     st = sub.add_parser("startup", help="start the app when you sign in to Windows")
     st.add_argument("state", choices=("on", "off", "status"), nargs="?", default="status")
     args = ap.parse_args(argv)
@@ -54,6 +55,10 @@ def main(argv=None) -> int:
         if not args.y and input("Clear captured jobs? [y/N] ").strip().lower() != "y":
             return 1
         print(f"Removed {jobs.Ledger().clear(keep_tracked=not args.all)} jobs.")
+        return 0
+    if args.cmd == "backup":
+        where = store.backup()
+        print(f"Backed up to {where}" if where else f"Today's backup is already in {store.data_dir() / 'backups'}")
         return 0
     if args.cmd == "startup":
         if not startup.supported():

@@ -221,3 +221,29 @@ def test_about_me_draft_flags_figures_not_in_the_resumes(server, monkeypatch):
     monkeypatch.setattr(ai, "draft_about_me", lambda text, current="": {"about_me": "I led 12 people. I cut costs 40%.", "to_add": []})
     _, out = call(server + "/api/profile/about-draft", {"resume": "Led 12 people at Acme. " * 10})
     assert out["check"] == ["I cut costs 40%."]
+
+
+def test_discover_roles_interview_and_tour(server, monkeypatch):
+    from job_scanner import ai
+    call(server + "/api/profile", {"profile": {"target_titles": ["Paralegal"], "locations": ["Durham, NC"],
+                                               "resumes": [{"name": "Main", "text": "Paralegal at Smith Law. " * 20}]}})
+    _, d = call(server + "/api/discover")
+    assert d["searches"][0]["title"] == "Paralegal" and d["roles"] is None and d["suggestions"] == []
+    monkeypatch.setattr(ai, "adjacent_roles", lambda text, liked: {"roles": [{"title": "Legal Assistant", "fit": "strong", "why": "x", "gap": ""}], "summary": "s"})
+    _, out = call(server + "/api/discover/roles", {})
+    assert out["role_searches"][0]["title"] == "Legal Assistant"
+    assert call(server + "/api/discover")[1]["roles"]["roles"][0]["title"] == "Legal Assistant"
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    call(server + "/api/capture", {"jobs": [{"source": "indeed", "id": "abc123def456", "title": "Paralegal", "company": "Acme"}]}, tok)
+    monkeypatch.setattr(ai, "interview_prep", lambda job, text, employer="", notes="": {"questions": [{"question": "Why law?", "why": "", "answer": "", "from_resume": True}], "topics": [], "ask_them": [], "research": []})
+    _, out = call(server + "/api/jobs/indeed:abc123def456/interview", {})
+    assert out["job"]["interview"]["questions"][0]["question"] == "Why law?"
+    assert call(server + "/api/learn", {"id": "bogus"})[0] == 400
+    _, out = call(server + "/api/settings", {"tour_done": True})
+    assert out["settings"]["tour_done"] is True
+    _, rc = call(server + "/api/resume-check")
+    assert rc["resumes"][0]["name"] == "Main"
+    _, st = call(server + "/api/state")
+    assert st["extension_seen"] == ""
+    call(server + "/api/capture/ping", headers=tok)
+    assert call(server + "/api/state")[1]["extension_seen"]
