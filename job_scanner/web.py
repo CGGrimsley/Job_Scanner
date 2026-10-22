@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, advice, ai, docx, insights, jobs, pdf, places, profile, resume, signals, startup, store, companies, health
+from . import __version__, advice, ai, companies, docx, feeds, health, insights, jobs, mail, nearby, pdf, places, profile, resume, signals, startup, store, watch
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -27,6 +27,7 @@ DEFAULT_PORT = 8766
 
 SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60,
                      "model_main": "", "model_light": "haiku", "model_auto": "main"}
+READ_PER_RUN = 5  # Claude reads per watch run, at most
 MODEL_CHOICES = ("", "haiku", "sonnet", "opus")
 
 
@@ -171,6 +172,32 @@ def make_handler(ledger: jobs.Ledger):
             if e.kind in ("skipped", "limit") or refresh:
                 raise
             return read
+
+    watching = {"running": False}
+
+    def read_new(keys: list) -> None:
+        """Let Claude read the strongest new watched jobs, the way it reads a posting you open: only quick scores of
+        70+ (Apply), at most READ_PER_RUN a run, best first, and within the daily cap. A board can add dozens of jobs
+        at once, and they shouldn't use up a day's plan."""
+        floor = max(70, int(app_settings()["auto_min_score"]))
+        recs = [r for r in (ledger.get(k) for k in keys) if r and r.get("description") and r["rules"]["score"] >= floor]
+        for rec in sorted(recs, key=lambda r: -r["rules"]["score"])[:READ_PER_RUN]:
+            key = rec["key"]
+            try:
+                out = analyze(key, auto=True)
+            except (ai.AIError, BadRequest, KeyError):
+                break
+            if (out.get("skipped") or "").startswith(("Today's", "Automatic analysis is off")):
+                break
+
+    def start_run(only=None) -> None:
+        def go():
+            watching["running"] = True
+            try:
+                watch.run(ledger, current_profile(), only=only, on_new=read_new)
+            finally:
+                watching["running"] = False
+        threading.Thread(target=go, name="watch-now", daemon=True).start()
 
     def write_letter(key: str, data: dict) -> dict:
         rec = ledger.get(key)
@@ -404,6 +431,10 @@ def make_handler(ledger: jobs.Ledger):
                     due = [n for n in advice.todo(list(ledger.jobs.values())) if n["urgency"] == "now"]
                     return self._json({"count": len(due), "jobs": [{"title": n.get("title_job"), "company": n.get("company"),
                                                                      "todo": n["title"]} for n in due[:5]]})
+                if path == "/api/capture/news":  # strong matches found by watching, for the extension's notifications
+                    since = q.get("since", "")
+                    return self._json({"news": [n for n in watch.state().get("news") or [] if n["at"] > since][-5:],
+                                       "now": jobs.now_iso()})
                 if path == "/api/capture/job":
                     rec = ledger.get(f"{q.get('source', '')}:{q.get('id', '')}")
                     if rec is None:
@@ -457,6 +488,11 @@ def make_handler(ledger: jobs.Ledger):
                 return self._json({"job": ledger.public(rec), "todo": advice.nudges(rec), "company": companies.get(rec.get("company") or ""),
                                    "pay": insights.pay_position(rec, list(ledger.jobs.values())),
                                    "ai_current": jobs.ai_current(rec, profile.fingerprint(current_profile()))})
+            if path == "/api/watch":
+                st = watch.state()
+                st.pop("mail_done", None)
+                return self._json({"config": watch.public(watch.load()), "state": st, "running": watching["running"],
+                                   "where": next(iter(current_profile()["locations"]), ""), "keywords": current_profile()["target_titles"][:5]})
             if path == "/api/places":
                 return self._json({"places": places.search(q.get("q", ""))})
             if path == "/api/ai/usage":
@@ -539,6 +575,39 @@ def make_handler(ledger: jobs.Ledger):
                 # a figure that none of the résumés (or their own words) contain is worth a second look before saving
                 out["check"] = unsupported_numbers(re.sub(r"(?<=[.!?])\s+", "\n", out["about_me"]), text + "\n" + current)
                 return self._json(out)
+            if path == "/api/watch":
+                return self._json({"config": watch.public(watch.save(data))})
+            if path == "/api/watch/board":
+                url = str(data.get("url") or "").strip()
+                found = feeds.board_from_url(url) or ((data.get("provider"), data.get("token")) if data.get("provider") else None)
+                if not found:
+                    raise BadRequest("Paste a link to the employer's job board on Greenhouse, Lever, Ashby or SmartRecruiters "
+                                     "(e.g. https://jobs.lever.co/acme).")
+                provider, token = found
+                n = nearby.probe(provider, token)
+                if n is None:
+                    raise BadRequest(f"There's no {feeds.BOARDS.get(provider, provider)} board called {token}.")
+                name = str(data.get("name") or "") or feeds.board_name(provider, token) or token
+                return self._json({"config": watch.public(watch.add_board(provider, token, name)), "jobs": n})
+            if path == "/api/watch/board/remove":
+                return self._json({"config": watch.public(watch.remove_board(str(data.get("provider")), str(data.get("token"))))})
+            if path == "/api/watch/run":
+                start_run(data.get("only"))
+                return self._json({"started": True})
+            if path == "/api/watch/test-email":
+                cfg = watch.load()["email"]
+                cfg.update({k: v for k, v in (data.get("email") or {}).items() if v not in ("", None)})
+                if not (cfg.get("host") and cfg.get("user") and cfg.get("password")):
+                    raise BadRequest("Fill in the mail server, your address and an app password first.")
+                problem = mail.test_login(cfg)
+                return self._json({"ok": not problem, "error": problem})
+            if path == "/api/watch/nearby":
+                p = current_profile()
+                if not p["locations"]:
+                    raise BadRequest("Add the places you'd work on your Profile first.")
+                items = nearby.find(p["locations"], p["target_titles"], p["skills"])
+                cfg = watch.save({"nearby": {"at": jobs.now_iso(), "places": p["locations"], "items": items}})
+                return self._json({"config": watch.public(cfg)})
             if path == "/api/settings":
                 changes = {}
                 if "auto_analyze" in data:
@@ -621,12 +690,16 @@ def make_handler(ledger: jobs.Ledger):
                     return self._json({"ok": True})
             return self._error("Not found", HTTPStatus.NOT_FOUND)
 
+    Handler.read_new = staticmethod(read_new)
+    Handler.current_profile = staticmethod(current_profile)
     return Handler
 
 
 def serve(port: int = DEFAULT_PORT, host: str = "127.0.0.1", open_browser: bool = False) -> None:
     ledger = jobs.Ledger()
-    httpd = ThreadingHTTPServer((host, port), make_handler(ledger))
+    handler = make_handler(ledger)
+    httpd = ThreadingHTTPServer((host, port), handler)
+    watch.start(ledger, handler.current_profile, on_new=handler.read_new)
     url = f"http://127.0.0.1:{port}/"
     b = ai.describe_backend()
     print(f"Job Scanner is running at {url}  (data: {store.data_dir()})")

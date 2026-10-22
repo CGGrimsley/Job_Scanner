@@ -154,6 +154,23 @@ async function checkFollowUps() {
   });
 }
 
+// Strong matches the app found by itself (Watching): a notification each, like the ones for jobs you scroll past.
+async function checkNews() {
+  const s = await settings();
+  if (!s.notify || !s.enabled || !s.token) return;
+  const { newsSince } = await chrome.storage.local.get({ newsSince: "" });
+  const out = await call(`/api/capture/news?since=${encodeURIComponent(newsSince)}`);
+  if (!out.ok) return;
+  await chrome.storage.local.set({ newsSince: out.now });
+  if (!newsSince) return; // first check after install: don't replay old finds
+  for (const n of out.news || []) {
+    chrome.notifications.create(n.url || `news-${n.at}`, {
+      type: "basic", iconUrl: "icons/icon128.png", priority: 1,
+      title: `${n.verdict} ${n.score} · ${n.title}`, message: `${n.company || ""} · found by watching ${n.via || ""}`.trim(),
+    });
+  }
+}
+
 /* ---------- filling application forms (only when the person clicks Fill this application) ---------- */
 const fillState = new Map(); // tabId -> { key, frames: frame ids with questions left }
 
@@ -252,10 +269,12 @@ async function checkForUpdate() {
 chrome.alarms.create("scanner-update", { periodInMinutes: 30 });
 chrome.alarms.create("scanner-health", { periodInMinutes: 5 });
 chrome.alarms.create("scanner-followups", { delayInMinutes: 1, periodInMinutes: 180 });
+chrome.alarms.create("scanner-news", { delayInMinutes: 1, periodInMinutes: 15 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "scanner-update") checkForUpdate();
   if (a.name === "scanner-health") checkHealth();
   if (a.name === "scanner-followups") checkFollowUps();
+  if (a.name === "scanner-news") checkNews();
 });
 chrome.runtime.onStartup.addListener(() => { checkForUpdate(); checkHealth(); });
 chrome.runtime.onInstalled.addListener(checkHealth);
