@@ -22,6 +22,8 @@ Chrome extension + local Python app (stdlib only) that scores job postings and g
 
 - LinkedIn's newer layout (`/jobs/search-results/`) has no stable classes: cards are list items whose markup names exactly one job id (`linkedinListCards`), the posting is the block under "About the job" (`newerItem`). Diagnostics include `structure` (tags, roles, attribute names and counts only) for fixing readers. `schedule()` never waits more than 1.5s, and scroll is listened for in the capture phase (inner scrolling lists).
 - Reposts: `signals.relisted` (same site, new id, a week or more later; or `jobs.note_posted` seeing the posting date jump forward). The extension's daily reminder reads `/api/capture/due` (tracker to-dos marked now). `insights.weekly` is the Insights page's week in review.
+- Discovery: `discover.py` builds search links only (the app never fetches job sites); `ai.adjacent_roles` (résumé evidence only) is kept in `insights.json` "roles". `learn.py` turns repeated passes into suggestions; only approved rules (`learned.json`) cost `PENALTY` points in `jobs.rescore`, with a caution saying why. `resume_check.py` is rule-based (no AI). `ai.interview_prep` marks questions the résumés don't answer (`from_resume` false).
+- Streamlining: Home (`more.js` `showHome`), the setup strip, and the first-run `tour` (settings `tour_done`; Skip for now / Don't show this again). One-click pairing: `extension/pair.js` runs only on local app pages carrying meta `job-scanner-app`; background.js accepts a `pair` message only from that local server. Nightly `store.backup` (14 days). Windows: `Install Job Scanner.bat` → `scripts/install.ps1` (keep ASCII for PowerShell 5.1).
 
 ## Tests
 `python -m pytest`
