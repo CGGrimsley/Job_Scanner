@@ -217,3 +217,27 @@ def test_only_the_strongest_new_finds_are_read_by_claude(monkeypatch):
     monkeypatch.setattr(ai, "company_read", lambda *a, **k: {"known": False})
     handler.read_new([f"greenhouse:{r['id']}" for r in rows])
     assert len(read) == web.READ_PER_RUN and "greenhouse:99" not in read
+
+
+def test_alert_card_whose_company_line_is_a_link_keeps_its_own_company():
+    # LinkedIn alerts often link the "Company · Place" line to the job too; it belongs to that card, not the next one
+    markup = """<table><tr><td><a href="https://www.linkedin.com/comm/jobs/view/4012345678/?t=1"><img alt="logo"></a>
+    <a href="https://www.linkedin.com/comm/jobs/view/4012345678/?t=2">Litigation Paralegal</a>
+    <p><a href="https://www.linkedin.com/comm/jobs/view/4012345678/?t=3">Acme Law · Durham, NC</a></p></td></tr>
+    <tr><td><a href="https://www.linkedin.com/comm/jobs/view/4012345679/?t=2">Legal Assistant</a><p>Bluth Legal · Raleigh, NC</p></td></tr>
+    </table>"""
+    rows = mail.parse_alert(markup, "linkedin")
+    assert [(r["id"], r["title"], r["company"], r["location"]) for r in rows] == [
+        ("4012345678", "Litigation Paralegal", "Acme Law", "Durham, NC"), ("4012345679", "Legal Assistant", "Bluth Legal", "Raleigh, NC")]
+
+
+def test_an_alert_email_never_relabels_a_job_already_seen():
+    led = jobs.Ledger()
+    led.add([{"source": "linkedin", "id": "4012345678", "kind": "card", "title": "Litigation Paralegal", "company": "Acme Law",
+              "location": "Durham, NC", "pay_text": "$60,000 - $70,000 a year"}], P)
+    before = led.get("linkedin:4012345678")["rules"]["score"]
+    led.add([{"source": "linkedin", "id": "4012345678", "kind": "card", "title": "Acme Law · Durham, NC", "company": "Bluth Legal",
+              "location": "Raleigh, NC", "pay_text": "", "found_by": "Job alert emails"}], P)
+    rec = led.get("linkedin:4012345678")
+    assert (rec["title"], rec["company"], rec["location"], rec["pay_text"]) == ("Litigation Paralegal", "Acme Law", "Durham, NC", "$60,000 - $70,000 a year")
+    assert rec["rules"]["score"] == before and rec["found_by"] == "Job alert emails"

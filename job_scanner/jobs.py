@@ -31,6 +31,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# LinkedIn's job-match lines ("Your profile and resume match the required qualifications well"), never a job title
+NOT_A_TITLE = re.compile(r"(?i)^(your profile|your (skills|experience|resume)|you('d| would) be|you're|you are|you have|you meet|"
+                         r"job match|how you match)\b|\b(match(es)?|meet(s)?) (the |all |most |some )?(required |preferred )?"
+                         r"(qualifications|requirements)\b")
+FOLLOWERS = re.compile(r"(?i)\s*[\d.,]+\s*[km]?\s+followers?\b.*$")
+
+
 def _str(v, n: int) -> str:
     return re.sub(r"[ \t ]+", " ", str(v or "")).strip()[:n]
 
@@ -60,6 +67,10 @@ def clean_row(raw: dict) -> dict | None:
         row["remote"] = raw["remote"]
     if isinstance(raw.get("tags"), list):
         row["tags"] = [_str(t, 60) for t in raw["tags"][:12] if t]
+    if row.get("title") and NOT_A_TITLE.search(row["title"]):
+        row.pop("title")  # a site's match banner read as the title: keep the one already known
+    if row.get("company"):
+        row["company"] = FOLLOWERS.sub("", row["company"].replace("&amp;", "&")).strip()
     if not row.get("title") and row["kind"] == "card":
         return None
     return row
@@ -366,8 +377,10 @@ def merge(rec: dict, row: dict) -> None:
             continue
         if k == "description" and len(v) < len(rec.get("description") or "") * 0.5:
             continue
-        if row["kind"] == "card" and rec.get("opened") and k in ("title", "company", "location") and rec.get(k):
-            continue
+        if row["kind"] == "card" and (rec.get("opened") or row.get("found_by")) and k in ("title", "company", "location") and rec.get(k):
+            continue  # an alert email or feed card never relabels a job you've already seen
+        if v in ("", None) and rec.get(k):
+            continue  # a card that leaves a field out doesn't blank what's known
         rec[k] = v
     if row["kind"] == "item":
         rec["opened"] = now_iso()

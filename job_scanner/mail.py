@@ -60,6 +60,11 @@ class _Links(HTMLParser):
             self.items.append((text, self.href))
 
 
+def _job_id(href: str, site: str):
+    m = (LINKEDIN_ID if site == "linkedin" else INDEED_ID).search(href or "")
+    return m.group(1) if m else None
+
+
 def parse_alert(markup: str, site: str) -> list:
     """Job cards from one alert email's HTML."""
     p = _Links()
@@ -84,6 +89,10 @@ def parse_alert(markup: str, site: str) -> list:
         after = []
         for t, h in items[i + 1:i + 6]:
             if h and (LINKEDIN_ID.search(h) or INDEED_ID.search(h) or "indeed" in h):
+                if jid and _job_id(h, site) == jid and t != text:  # the same card's company line, linked to the same job
+                    if not SKIP_TEXT.match(t):
+                        after.append(t)
+                    continue
                 if after or t == text:
                     break
                 continue

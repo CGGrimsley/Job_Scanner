@@ -69,6 +69,12 @@ def test_linkedin_newer_layout(reads):
     assert p["diag"]["structure"]["items_with_one_id"] == 2 and p["diag"]["structure"]["about_heading"]
 
 
+def test_linkedin_match_banner_isnt_the_title(reads):
+    item = by_kind(reads["linkedin-banner.html"], "item")[0]
+    assert item["id"] == "4462731705" and item["title"] == "E-Discovery Paralegal"
+    assert item["company"] == "Kilpatrick Townsend & Stockton LLP" and item["location"] == "Winston-Salem, NC"
+
+
 def test_indeed_redesigned_posting_pane(reads):
     p = reads["indeed-new-pane.html"]
     cards = by_kind(p, "card")

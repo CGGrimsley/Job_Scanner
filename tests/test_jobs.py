@@ -68,3 +68,12 @@ def test_for_page_finds_the_job_an_application_form_belongs_to():
     assert L.for_page("https://acme.wd1.myworkdayjobs.com/x") is None
     L.set_doc("lever:0b7c9e2a-1111", "packet", {"resume": ""})
     assert L.for_page("https://acme.wd1.myworkdayjobs.com/x")["id"] == "0b7c9e2a-1111"  # Easy apply was just used on it
+
+
+def test_a_match_banner_is_never_saved_as_the_title():
+    from job_scanner import jobs
+    row = jobs.clean_row({"source": "linkedin", "id": "4462731705", "kind": "item", "description": "x" * 300,
+                          "title": "Your profile and resume match the required qualifications well",
+                          "company": "Kilpatrick Townsend &amp; Stockton LLP 22,383 followers"})
+    assert "title" not in row and row["company"] == "Kilpatrick Townsend & Stockton LLP"
+    assert jobs.clean_row({"source": "linkedin", "id": "1234567", "title": "Qualifications Analyst"})["title"] == "Qualifications Analyst"
