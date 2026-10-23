@@ -366,8 +366,10 @@ def merge(rec: dict, row: dict) -> None:
             continue
         if k == "description" and len(v) < len(rec.get("description") or "") * 0.5:
             continue
-        if row["kind"] == "card" and rec.get("opened") and k in ("title", "company", "location") and rec.get(k):
-            continue
+        if row["kind"] == "card" and (rec.get("opened") or row.get("found_by")) and k in ("title", "company", "location") and rec.get(k):
+            continue  # an alert email or feed card never relabels a job you've already seen
+        if v in ("", None) and rec.get(k):
+            continue  # a card that leaves a field out doesn't blank what's known
         rec[k] = v
     if row["kind"] == "item":
         rec["opened"] = now_iso()
