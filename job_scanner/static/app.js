@@ -12,6 +12,7 @@ const STATUS_LABEL = { "": "Not tracked", saved: "Saved", applied: "Applied", in
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = await res.json().catch(() => ({}));
+  if (res.status === 401 && out.login) location.href = "/login"; // on a home server, signed out
   if (!res.ok) throw new Error(out.error || `Error ${res.status}`);
   return out;
 }
@@ -790,6 +791,7 @@ function boardLink(b) {
 }
 
 /* ---------- setup ---------- */
+const onThisComputer = () => ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
 const MODELS = [["haiku", "Haiku (fast, light on your plan)"], ["sonnet", "Sonnet (balanced)"], ["opus", "Opus (most thorough)"]];
 const modelOpts = (v, dflt) => `<option value="">${esc(dflt)}</option>` + MODELS.map(([k, label]) => `<option value="${k}" ${v === k ? "selected" : ""}>${label}</option>`).join("");
 async function showSetup() {
@@ -836,12 +838,13 @@ async function showSetup() {
       <div class="card"><h2>2. The Chrome extension</h2>
         <div id="ext-connect">${extensionInstalled() ? `<p><b>The extension is installed${S.extension_seen ? " and connected" : ""}.</b> ${S.extension_seen ? "" : "Click below to connect it to this app."}</p>
           <button class="btn ${S.extension_seen ? "" : "primary"}" id="pair">${S.extension_seen ? "Connect it again" : "Connect the extension"}</button> <span class="note" id="pair-out"></span>`
-          : `<p class="note">Not installed in this browser yet. Add it with the steps below; then reload this page and one click connects it.</p>`}</div>
+          : onThisComputer() ? `<p class="note">Not installed in this browser yet. Add it with the steps below; then reload this page and one click connects it.</p>`
+          : `<p class="note">Job Scanner is running on another machine, so connect the extension by hand with the steps below.</p>`}</div>
         <details ${extensionInstalled() ? "" : "open"}><summary>Install it, or connect by hand</summary>
         <ol class="steps">
           <li>Open <code>chrome://extensions</code> and turn on <b>Developer mode</b>.</li>
           <li>Click <b>Load unpacked</b> and choose the <code>extension</code> folder inside Job Scanner.</li>
-          <li>Click the Job Scanner icon in Chrome's toolbar, then <b>Settings</b>. Paste this pairing token and click <b>Save &amp; test</b>.</li>
+          <li>Click the Job Scanner icon in Chrome's toolbar, then <b>Settings</b>.${onThisComputer() ? "" : ` Set the app address to <code>${esc(location.origin)}</code> (one-click connecting only works when the app runs on the same computer as Chrome).`} Paste this pairing token and click <b>Save &amp; test</b>.</li>
         </ol>
         <div class="token"><input id="token" readonly value="${esc(token)}"><button class="btn" id="copy">Copy</button></div>
         <p class="note">Then browse LinkedIn, Indeed or NCWorks. Cards get a fit stamp, and a panel in the corner shows the posting you have open. On any other career site, click <b>Scan this page</b> in the extension.</p>

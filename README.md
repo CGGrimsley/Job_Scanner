@@ -49,6 +49,23 @@ Then browse jobs as usual.
 
 **Start with Windows:** tick *Start Job Scanner when I sign in to Windows* on the Setup page (or run `python -m job_scanner startup on`). It puts a small script in your Startup folder that runs the app with no window.
 
+## Home server (Docker)
+
+Run Job Scanner on a homelab box and use it from any computer on your network. The extension stays on each computer's Chrome and sends what you browse to the server; Claude runs on the server, on your subscription.
+
+1. **Make a Claude token.** On any computer where Claude Code is signed in to your Claude account, run `claude setup-token` and copy the token it prints (it lasts a year).
+2. **Configure.** On the server, clone this repo, `cp .env.example .env`, and set:
+   - `CLAUDE_CODE_OAUTH_TOKEN=` the token from step 1
+   - `JOB_SCANNER_PASSWORD=` a password for the app (required: the app refuses to listen on the network without one)
+   - `JOB_SCANNER_ALLOWED_HOSTS=` any host names you'll use besides the IP, e.g. `homelab.lan,jobs.example.com`
+3. **Start it:** `docker compose up -d --build`. Check it with `docker compose logs -f` and `docker compose exec job-scanner python3 -m job_scanner doctor` (it should say *Test call: OK*).
+4. **Open** `http://<server-ip>:8766`, sign in with the password, and fill in your Profile.
+5. **Connect the extension** on each computer: load the `extension` folder (step 5 above), open its **Settings**, set the app address to `http://<server-ip>:8766`, allow the permission Chrome asks for, paste the pairing token from the app's **Setup** page and click **Save & test**. (One-click connecting only works when the app runs on the same computer as Chrome.)
+
+Your data lives in the `job-scanner-data` Docker volume (`/data` in the container), with the same nightly backups; Watching checks your sources every 4 hours (change it on the Watching page) as long as the container runs. To update: `git pull && docker compose up -d --build`.
+
+**Behind a reverse proxy** (Caddy, Traefik, Nginx Proxy Manager): add the proxy's host name to `JOB_SCANNER_ALLOWED_HOSTS`, and make sure the proxy passes the original `Host` header (Caddy and Traefik do; with plain nginx add `proxy_set_header Host $host;` and `proxy_set_header X-Forwarded-Proto $scheme;`). Over HTTPS the sign-in cookie is marked Secure. Keep it on your LAN or behind a VPN such as Tailscale rather than open to the internet: it holds your résumé and runs Claude on your plan.
+
 ## How Claude is used, and how much
 
 Job Scanner runs Claude Code on your computer (`claude -p`). On Windows it starts the real `claude.exe` behind npm's `claude.cmd`, so it works whether you installed with npm or the installer. Its work counts against your Claude plan's usage, not a separate bill. Your `ANTHROPIC_API_KEY`, if you have one, is removed from those calls so a pay-as-you-go key is never used by accident.
@@ -117,7 +134,7 @@ The place names in the location picker come from [GeoNames](https://www.geonames
 ## Commands
 
 ```
-python -m job_scanner serve [--port 8766] [--open]   # run the app
+python -m job_scanner serve [--port 8766] [--host 0.0.0.0] [--open]   # run the app (a host other than 127.0.0.1 needs JOB_SCANNER_PASSWORD)
 python -m job_scanner doctor                         # check Claude and the data folder
 python -m job_scanner token [--rotate]               # print (or replace) the extension pairing token
 python -m job_scanner reset [--all] [-y]             # clear captured jobs (keeps tracked ones unless --all)

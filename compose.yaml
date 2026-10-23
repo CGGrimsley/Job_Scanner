@@ -1,0 +1,21 @@
+# Job Scanner on a home server: `docker compose up -d --build`, then open http://<server>:8766
+# Put JOB_SCANNER_PASSWORD and CLAUDE_CODE_OAUTH_TOKEN in .env first (copy .env.example). See README, "Home server".
+services:
+  job-scanner:
+    build: .
+    image: job-scanner:local
+    container_name: job-scanner
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # fixed inside the container; change the published port with JOB_SCANNER_HOST_PORT instead
+      JOB_SCANNER_HOST: 0.0.0.0
+      JOB_SCANNER_PORT: "8766"
+      JOB_SCANNER_DATA: /data
+    ports:
+      - "${JOB_SCANNER_HOST_PORT:-8766}:8766"
+    volumes:
+      - job-scanner-data:/data
+
+volumes:
+  job-scanner-data:
