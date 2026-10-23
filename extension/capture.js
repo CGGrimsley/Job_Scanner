@@ -109,6 +109,11 @@
     }
     return h.parentElement;
   }
+  const LI_NOT_TITLE = /^(promoted( by hirer)?|about the job|save|saved|apply|easy apply|show (more|less)|\S+ followers?|.*\bapplicants?|responses managed off linkedin|actively (reviewing|recruiting).*|be an early applicant)$/i;
+  // the job-match and premium insight lines LinkedIn puts above a posting
+  const LI_BANNER = /^(your profile|your (skills|experience|resume)|you('d| would) be|you're|you are|you have|you meet|job match|how you match|am i a good fit|match details|premium|try premium)\b|\b(match(es)?|meet(s)?) (the |all |most |some )?(required |preferred )?(qualifications|requirements)\b/i;
+  const companyName = (t) => clean(String(t || "").split("\n").map((l) => l.trim()).find(Boolean), 200)
+    .replace(/\s*[\d.,]+\s*[KkMm]?\s+followers?\b.*$/i, "");
   function newerItem(root) {
     const h = aboutHeading(root) || aboutHeading();
     if (!h) return null;
@@ -119,9 +124,12 @@
     if (description.length < 80) return null;
     const pane = linkedinPane() || root;
     const companyLink = [...pane.querySelectorAll('a[href*="/company/"]')].find((a) => clean(a.innerText));
-    const company = companyLink ? clean(companyLink.innerText, 200) : "";
+    const company = companyLink ? companyName(companyLink.innerText) : "";
     const head = lines(pane).slice(0, 14);
-    const title = textOf(pane, "h1") || head.find((l) => l !== company && l.length > 3 && l.length < 140 && !/^(promoted|about the job|save|apply|easy apply)$/i.test(l)) || "";
+    // no h1: the title is the line just above "Place · posted · applicants", skipping LinkedIn's match banners
+    const titleLike = (l) => l !== company && l.length > 3 && l.length < 140 && !/·/.test(l) && !LI_NOT_TITLE.test(l) && !LI_BANNER.test(l);
+    const meta = head.findIndex((l) => /·/.test(l));
+    const title = textOf(pane, "h1") || (meta > 0 && head.slice(0, meta).reverse().find(titleLike)) || head.find(titleLike) || "";
     const top = head.find((l) => /·/.test(l) && l !== title) || "";
     const parts = top.split(/\s*·\s*/).filter(Boolean);
     const all = head.join("\n");
