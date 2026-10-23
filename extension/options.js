@@ -11,7 +11,11 @@ chrome.storage.local.get(DEFAULTS, (s) => {
 });
 function normalise(raw) {
   let server = (raw.trim() || DEFAULTS.server).replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(server)) server = (/^(127\.|localhost)/i.test(server) ? "http://" : "https://") + server;
+  // no scheme typed: plain http for this computer and home-network addresses (an IP, a .lan/.local/.home.arpa name or
+  // a bare hostname like "homelab"), https for anything else
+  const host = server.split(/[/:]/)[0];
+  const home = /^[\d.]+$|^\[|^localhost$|\.(lan|local|home|internal|home\.arpa)$|^[^.]+$/i.test(host);
+  if (!/^https?:\/\//i.test(server)) server = (home ? "http://" : "https://") + server;
   return server;
 }
 f.addEventListener("submit", (e) => {

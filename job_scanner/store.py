@@ -61,6 +61,16 @@ def pairing_token(rotate: bool = False) -> str:
         return s["token"]
 
 
+def session_secret() -> str:
+    """Signs the sign-in cookie when the app has a password (JOB_SCANNER_PASSWORD). Kept apart from the pairing token,
+    so making a new token doesn't sign everyone out."""
+    with _lock:
+        s = settings()
+        if not s.get("session_secret"):
+            s = save_settings({"session_secret": secrets.token_urlsafe(32)})
+        return s["session_secret"]
+
+
 BACKUP_KEEP = 14
 
 

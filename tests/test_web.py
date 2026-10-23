@@ -247,3 +247,59 @@ def test_discover_roles_interview_and_tour(server, monkeypatch):
     assert st["extension_seen"] == ""
     call(server + "/api/capture/ping", headers=tok)
     assert call(server + "/api/state")[1]["extension_seen"]
+
+
+def test_password_guards_the_app_but_not_the_extension(server, monkeypatch):
+    import urllib.parse
+
+    monkeypatch.setenv("JOB_SCANNER_PASSWORD", "correct horse")
+    status, out = call(server + "/api/state")
+    assert status == 401 and out["login"]
+    tok = {"X-Scanner-Token": store.pairing_token()}
+    assert call(server + "/api/capture/ping", headers=tok)[0] == 200
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+
+    def login(pw):
+        req = urllib.request.Request(server + "/login", data=urllib.parse.urlencode({"password": pw}).encode())
+        try:
+            r = opener.open(req)
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers
+        return r.status, r.headers
+
+    with pytest.raises(urllib.error.HTTPError) as e:
+        opener.open(server + "/")
+    assert e.value.code == 303 and e.value.headers["Location"] == "/login"
+    assert login("wrong")[0] == 401
+    code, headers = login("correct horse")
+    assert code == 303
+    cookie = headers["Set-Cookie"].split(";")[0]
+    assert "HttpOnly" in headers["Set-Cookie"]
+    status, out = call(server + "/api/state", headers={"Cookie": cookie})
+    assert status == 200 and "profile" in out
+    assert call(server + "/api/state", headers={"Cookie": cookie.split("=")[0] + "=forged"})[0] == 401
+
+
+def test_wrong_passwords_are_limited(server, monkeypatch):
+    import urllib.parse
+
+    monkeypatch.setenv("JOB_SCANNER_PASSWORD", "secret")
+    codes = []
+    for _ in range(web.LOGIN_TRIES + 1):
+        req = urllib.request.Request(server + "/login", data=urllib.parse.urlencode({"password": "nope"}).encode())
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            codes.append(e.code)
+    assert codes[-1] == 429
+
+
+def test_no_network_listening_without_a_password(monkeypatch):
+    monkeypatch.delenv("JOB_SCANNER_PASSWORD", raising=False)
+    with pytest.raises(SystemExit):
+        web.serve(port=0, host="0.0.0.0")
+    assert web.is_loopback("127.0.0.1") and web.is_loopback("::1") and not web.is_loopback("0.0.0.0")

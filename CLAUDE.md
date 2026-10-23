@@ -26,5 +26,7 @@ Chrome extension + local Python app (stdlib only) that scores job postings and g
 - Discovery: `discover.py` builds search links only (the app never fetches job sites); `ai.adjacent_roles` (résumé evidence only) is kept in `insights.json` "roles". `learn.py` turns repeated passes into suggestions; only approved rules (`learned.json`) cost `PENALTY` points in `jobs.rescore`, with a caution saying why. `resume_check.py` is rule-based (no AI). `ai.interview_prep` marks questions the résumés don't answer (`from_resume` false).
 - Streamlining: Home (`more.js` `showHome`), the setup strip, and the first-run `tour` (settings `tour_done`; Skip for now / Don't show this again). One-click pairing: `extension/pair.js` runs only on local app pages carrying meta `job-scanner-app`; background.js accepts a `pair` message only from that local server. Nightly `store.backup` (14 days). Windows: `Install Job Scanner.bat` → `scripts/install.ps1` (keep ASCII for PowerShell 5.1).
 
+- Home server: `Dockerfile` + `compose.yaml` (Claude Code inside, `CLAUDE_CODE_OAUTH_TOKEN`, data in the `/data` volume). `web.serve` refuses a non-loopback host without `JOB_SCANNER_PASSWORD`; with one set, pages and the non-capture API need the `job_scanner_session` cookie from `/login` (`session_value`, signed with `store.session_secret`). `/api/capture*` stays token-only for the extension.
+
 ## Tests
 `python -m pytest`

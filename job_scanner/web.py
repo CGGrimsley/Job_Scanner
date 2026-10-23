@@ -1,5 +1,8 @@
 """The local app: `python -m job_scanner serve`. A stdlib HTTP server on 127.0.0.1 serving the web app and the
-API the Chrome extension posts captured jobs to."""
+API the Chrome extension posts captured jobs to.
+
+On a home server (`--host 0.0.0.0`, or Docker) the app needs a password, JOB_SCANNER_PASSWORD: the pages and their API
+then ask for it once per browser, and the extension keeps using its pairing token."""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import mimetypes
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +32,9 @@ DEFAULT_PORT = 8766
 SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60,
                      "model_main": "", "model_light": "haiku", "model_auto": "main", "tour_done": False}
 READ_PER_RUN = 5  # Claude reads per watch run, at most
+SESSION_COOKIE = "job_scanner_session"
+SESSION_DAYS = 30
+LOGIN_TRIES, LOGIN_WAIT = 5, 900  # wrong passwords from one address, then a 15-minute wait
 MODEL_CHOICES = ("", "haiku", "sonnet", "opus")
 
 
@@ -60,6 +67,39 @@ def host_allowed(host: str) -> bool:
         pass
     allowed = {h.strip().lower() for h in os.environ.get("JOB_SCANNER_ALLOWED_HOSTS", "").split(",") if h.strip()}
     return name in allowed
+
+
+def app_password() -> str:
+    return os.environ.get("JOB_SCANNER_PASSWORD", "")
+
+
+def is_loopback(host: str) -> bool:
+    if host in ("localhost", "localhost."):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def session_value(password: str) -> str:
+    """What the sign-in cookie holds: changes when the password does, so a new password signs everyone out."""
+    return hmac.new(store.session_secret().encode(), password.encode(), "sha256").hexdigest()
+
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Scanner: sign in</title><link rel="icon" href="/favicon.png">
+<style>
+body{font:16px system-ui,sans-serif;background:#f4f2ee;color:#222;display:grid;place-items:center;min-height:100vh;margin:0}
+form{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.08);width:min(320px,90vw)}
+h1{font-size:20px;margin:0 0 16px}input,button{font:inherit;width:100%;box-sizing:border-box;padding:9px;margin-top:8px}
+button{background:#222;color:#fff;border:0;border-radius:6px;cursor:pointer}.err{color:#a33;font-size:14px}
+@media (prefers-color-scheme:dark){body{background:#181818;color:#eee}form{background:#262626}button{background:#eee;color:#111}}
+</style></head><body>
+<form method="post" action="/login"><h1>Job Scanner</h1><label>Password<input type="password" name="password" autofocus
+autocomplete="current-password"></label><p class="err">{error}</p><button type="submit">Sign in</button></form>
+</body></html>"""
 
 
 def unsupported_numbers(text: str, source: str) -> list:
@@ -303,6 +343,8 @@ def make_handler(ledger: jobs.Ledger):
             out["has_resume"] = bool((rec.get("tailored") or {}).get("text"))
         return out
 
+    failed_logins: dict = {}  # address -> (wrong passwords, since)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"JobScanner/{__version__}"
 
@@ -378,6 +420,60 @@ def make_handler(ledger: jobs.Ledger):
             origin = self.headers.get("Origin")
             return not origin or urlparse(origin).netloc == self.headers.get("Host")
 
+        def _signed_in(self) -> bool:
+            pw = app_password()
+            if not pw:
+                return True
+            from http.cookies import CookieError, SimpleCookie
+
+            try:
+                morsel = SimpleCookie(self.headers.get("Cookie") or "").get(SESSION_COOKIE)
+            except CookieError:
+                return False
+            return bool(morsel) and hmac.compare_digest(morsel.value, session_value(pw))
+
+        def _redirect(self, where: str, extra: dict | None = None):
+            self._send(b"", "text/plain", HTTPStatus.SEE_OTHER, {"Location": where, **(extra or {})})
+
+        def _sign_in_first(self, path: str) -> bool:
+            """Answers (and returns True) when the app has a password and this browser hasn't signed in yet."""
+            if path in ("/login", "/favicon.png") or self._signed_in():
+                return False
+            if path.startswith("/api/"):
+                self._json({"error": "Sign in to Job Scanner first.", "login": True}, HTTPStatus.UNAUTHORIZED)
+            else:
+                self._redirect("/login")
+            return True
+
+        def _login_page(self, error: str = "", status=HTTPStatus.OK):
+            import html
+
+            self._send(LOGIN_PAGE.replace("{error}", html.escape(error)).encode("utf-8"), "text/html; charset=utf-8", status)
+
+        def _login(self):
+            pw = app_password()
+            if not pw or not self._same_origin():
+                return self._redirect("/")
+            ip, now = self.client_address[0], time.monotonic()
+            tries, since = failed_logins.get(ip, (0, now))
+            if now - since > LOGIN_WAIT:
+                tries, since = 0, now
+            if tries >= LOGIN_TRIES:
+                return self._login_page("Too many wrong passwords. Try again in 15 minutes.", HTTPStatus.TOO_MANY_REQUESTS)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            raw = self.rfile.read(min(max(n, 0), 4096)).decode("utf-8", "replace")
+            given = (parse_qs(raw).get("password") or [""])[0]
+            if not hmac.compare_digest(given.encode(), pw.encode()):
+                failed_logins[ip] = (tries + 1, since)
+                return self._login_page("That password isn't right.", HTTPStatus.UNAUTHORIZED)
+            failed_logins.pop(ip, None)
+            secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
+            self._redirect("/", {"Set-Cookie": f"{SESSION_COOKIE}={session_value(pw)}; Path=/; HttpOnly; SameSite=Lax; "
+                                               f"Max-Age={SESSION_DAYS * 86400}{secure}"})
+
         def _token_ok(self) -> bool:
             return hmac.compare_digest(self.headers.get("X-Scanner-Token") or "", store.pairing_token())
 
@@ -447,6 +543,12 @@ def make_handler(ledger: jobs.Ledger):
                         raise KeyError(q.get("key"))
                     return self._file(*export_doc(rec, q.get("doc", "resume"), q.get("format", "pdf")))
                 return self._error("Not found", HTTPStatus.NOT_FOUND)
+            if self._sign_in_first(path):
+                return
+            if path == "/login":
+                return self._redirect("/") if self._signed_in() and app_password() else self._login_page()
+            if path == "/logout":
+                return self._redirect("/login", {"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"})
             if path.startswith("/api/") and not self._same_origin():
                 return self._error("Forbidden", HTTPStatus.FORBIDDEN)
             if path == "/api/state":
@@ -560,6 +662,10 @@ def make_handler(ledger: jobs.Ledger):
                     rec = ledger.update(key, {"status": data.get("status", "")})
                     return self._json({"mark": ledger.mark(rec)})
                 return self._error("Not found", HTTPStatus.NOT_FOUND)
+            if path == "/login":
+                return self._login()
+            if self._sign_in_first(path):
+                return
             if not self._same_origin():
                 return self._error("Forbidden", HTTPStatus.FORBIDDEN)
             data = self._body(MAX_UPLOAD if path == "/api/profile/resume-file" else MAX_BODY)
@@ -745,13 +851,18 @@ def make_handler(ledger: jobs.Ledger):
 
 
 def serve(port: int = DEFAULT_PORT, host: str = "127.0.0.1", open_browser: bool = False) -> None:
+    if not is_loopback(host) and not app_password():
+        raise SystemExit(f"Job Scanner on {host} would be open to your whole network without a password. "
+                         "Set JOB_SCANNER_PASSWORD (in .env), or run it on 127.0.0.1.")
     ledger = jobs.Ledger()
     handler = make_handler(ledger)
     httpd = ThreadingHTTPServer((host, port), handler)
     watch.start(ledger, handler.current_profile, on_new=handler.read_new)
     url = f"http://127.0.0.1:{port}/"
     b = ai.describe_backend()
-    print(f"Job Scanner is running at {url}  (data: {store.data_dir()})")
+    where = url if is_loopback(host) else (f"port {port} of this machine's addresses" if host in ("0.0.0.0", "::")
+                                          else f"http://{host}:{port}/") + " (password required)"
+    print(f"Job Scanner is running at {where}  (data: {store.data_dir()})")
     print(f"Claude: {b['label']}" + ("" if b["backend"] else "  -- install Claude Code and sign in to turn on AI guidance"))
     print("Ctrl-C to stop.")
     def nightly():
