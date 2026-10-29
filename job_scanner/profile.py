@@ -20,6 +20,7 @@ DEFAULT = {
     "about_me": "",          # free text: who they are, what they want next, what matters to them
     "resumes": [],           # [{"name": "Data analyst", "text": "..."}]: people keep several targeted résumés
     "target_titles": [],     # e.g. ["data analyst", "business analyst"]
+    "title_aliases": [],     # other titles employers use for the same jobs; count as target titles (suggested by Claude)
     "skills": [],            # what they can do; matched against postings
     "avoid_keywords": [],    # words that rule a posting out (e.g. "commission only", "door to door")
     "dealbreakers": "",      # free text for Claude (e.g. "no night shifts, no more than 25% travel")
@@ -76,6 +77,7 @@ def clean(raw: dict) -> dict:
     p["dealbreakers"] = str(raw.get("dealbreakers") or "").strip()[:2000]
     for k in ("target_titles", "skills", "avoid_keywords", "locations"):
         p[k] = _list(raw.get(k, DEFAULT[k]), lines_only=(k == "locations"))
+    p["title_aliases"] = _list(raw.get("title_aliases", []), n=120)
     p["remote"] = [x for x in _list(raw.get("remote", DEFAULT["remote"])) if x in REMOTE_CHOICES] or list(REMOTE_CHOICES)
     p["seniority"] = [x for x in _list(raw.get("seniority", [])) if x in SENIORITY_CHOICES]
     p["job_types"] = [x for x in _list(raw.get("job_types", DEFAULT["job_types"])) if x in JOB_TYPE_CHOICES]
@@ -156,14 +158,47 @@ def save(raw: dict) -> dict:
     return p
 
 
+ALIASES_FILE = "titles.json"  # {"for": the target titles the last suggestion was for, "suggested": what was suggested}
+
+
+def aliases_due(p: dict, now: float | None = None) -> bool:
+    """The target titles changed since the last suggestion (a failed try waits a day)."""
+    import time
+
+    saved = store.read_json(ALIASES_FILE, {})
+    if (now or time.time()) - float(saved.get("failed_at") or 0) < 86400:
+        return False
+    return bool(p.get("target_titles")) and [t.lower() for t in saved.get("for") or []] != [t.lower() for t in p["target_titles"]]
+
+
+def aliases_failed() -> None:
+    import time
+
+    store.write_json(ALIASES_FILE, {**store.read_json(ALIASES_FILE, {}), "failed_at": time.time()})
+
+
+def merge_aliases(p: dict, suggested: list) -> dict:
+    """Add Claude's suggested titles to the profile's aliases, except ones the person deleted after an earlier
+    suggestion (they were suggested before and aren't in the profile now). Records the suggestion."""
+    saved = store.read_json(ALIASES_FILE, {})
+    have = {a.lower() for a in p.get("title_aliases") or []}
+    deleted = {a.lower() for a in saved.get("suggested") or []} - have
+    targets = {t.lower() for t in p.get("target_titles") or []}
+    add = [a for a in suggested if a.lower() not in have | deleted | targets]
+    store.write_json(ALIASES_FILE, {"for": p.get("target_titles") or [], "failed_at": 0,
+                                    "suggested": list(dict.fromkeys((saved.get("suggested") or []) + suggested))[-300:]})
+    return clean({**p, "title_aliases": (p.get("title_aliases") or []) + add})
+
+
 def is_empty(p: dict) -> bool:
     return not (p.get("target_titles") or p.get("skills") or p.get("resumes") or p.get("about_me"))
 
 
 def fingerprint(p: dict) -> str:
     """Changes whenever anything Claude sees changes, so an old analysis can be marked out of date."""
-    # application details (phone, links, authorization) don't change a fit assessment
-    seen = {k: v for k, v in p.items() if k != "apply"}
+    # application details (phone, links, authorization) don't change a fit assessment,
+    # nor do application details or the title aliases, which only feed the quick score
+    seen = {k: v for k, v in p.items() if k not in ("apply", "title_aliases")}
     return hashlib.sha256(json.dumps(seen, sort_keys=True).encode()).hexdigest()[:12]
 
 

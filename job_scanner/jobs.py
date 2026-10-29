@@ -212,6 +212,14 @@ class Ledger:
             self.save()
             return rec
 
+    def set_triage(self, looks: dict) -> None:
+        """Claude's first look at postings ({key: {fit_score, verdict, why}}), used to pick which get a full read."""
+        with _lock:
+            for k, v in looks.items():
+                if k in self.jobs:
+                    self.jobs[k]["triage"] = {**v, "at": now_iso()}
+            self.save()
+
     def mark_pushed(self, keys: list) -> None:
         """Remember which jobs reached the phone, so each is sent once."""
         with _lock:
@@ -275,6 +283,8 @@ class Ledger:
             recs = [r for r in recs if best(r)["verdict"] == q["verdict"]]
         if q.get("fresh"):
             recs = [r for r in recs if fresh(r)]
+        if q.get("drafted"):
+            recs = [r for r in recs if r.get("overnight")]
         if q.get("text"):
             t = q["text"].lower()
             recs = [r for r in recs if t in " ".join(str(r.get(k) or "") for k in ("title", "company", "location")).lower()]

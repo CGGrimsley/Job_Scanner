@@ -159,3 +159,102 @@ def test_watched_jobs_go_to_the_phone_once(monkeypatch):
     handler.after_watch(["greenhouse:1"])
     assert sent == ["Apply 82 - Paralegal at Acme Law"]
     assert ledger.get("greenhouse:1")["pushed"]
+
+
+# ---------- the second round: aliases, learning what you go for, overnight drafts, interviews, first looks ----------
+from job_scanner import ai, learn, scoring  # noqa: E402
+
+
+def test_title_aliases_count_as_target_roles():
+    job = {"title": "Litigation Support Specialist", "description": "e-filing"}
+    assert scoring.score(job, P)["cautions"][0] == "Title isn't one of your target roles"
+    with_alias = profile.clean({**P, "title_aliases": ["Litigation Support Specialist"]})
+    assert scoring.score(job, with_alias)["reasons"][0] == "Title matches what you're after"
+    assert profile.fingerprint(with_alias) == profile.fingerprint(P)  # Claude's reads don't go stale
+
+
+def test_suggested_aliases_respect_what_you_deleted():
+    assert profile.aliases_due(P)
+    p = profile.merge_aliases(P, ["Legal Assistant", "Litigation Paralegal", "paralegal"])
+    assert p["title_aliases"] == ["Legal Assistant", "Litigation Paralegal"] and not profile.aliases_due(p)
+    p = {**p, "title_aliases": ["Litigation Paralegal"]}  # the person deleted one
+    p = profile.merge_aliases(p, ["Legal Assistant", "Paralegal Specialist"])
+    assert p["title_aliases"] == ["Litigation Paralegal", "Paralegal Specialist"]
+    profile.aliases_failed()
+    assert not profile.aliases_due({**P, "target_titles": ["Clerk"]})  # a failure waits a day
+
+
+def test_learning_what_you_go_for():
+    def job(i, st, company="Duke Health"):
+        return {"key": f"x:{i}", "title": "Paralegal", "company": company, "status": st,
+                "rules": {"score": 60, "verdict": "Consider", "reasons": [], "cautions": []}}
+    recs = [job(1, "saved"), job(2, "applied"), job(3, "dismissed", "Other"), job(4, "interviewing")]
+    up = [s for s in learn.suggestions(recs, P) if s["up"]]
+    assert up and up[0]["id"] == "up:company:duke health" and up[0]["kept"] == 4  # the interview counted twice
+    learn.decide("up:company:duke health", True, "jobs at Duke Health")
+    fresh = job(9, "")
+    learn.apply(fresh, set())
+    assert fresh["rules"]["score"] == 60 + learn.BOOST and fresh["rules"]["reasons"][0].startswith("Like ones you've gone for")
+    avoided = {**job(10, ""), "rules": {"score": 25, "verdict": "Skip", "reasons": [], "cautions": []}}
+    learn.apply(avoided, set())
+    assert avoided["rules"]["score"] == 25  # never lifts a job out of a hard stop
+    learn.forget("up:company:duke health")
+    assert learn.load()["rules"] == []
+
+
+def test_overnight_draft_candidates():
+    now = datetime.now(timezone.utc)
+    recs = [rec("a:1", score=80, description="x"), rec("a:2", score=90, description="x"),
+            rec("a:3", score=75, description="x", posted_days=0), rec("a:4", score=95, description=""),
+            rec("a:5", score=95, description="x", status="saved"), rec("a:6", score=95, description="x", packet={"at": "x"}),
+            rec("a:7", score=95, by="rules", description="x"),
+            rec("a:8", score=95, description="x", first_seen=(now - timedelta(days=5)).isoformat())]
+    assert [r["key"] for r in alerts.draft_candidates(recs, 3, now)] == ["a:3", "a:2", "a:1"]
+    assert alerts.draft_candidates(recs, 0, now) == []
+
+
+def test_interview_reminder_and_thanks_due():
+    tomorrow = (TODAY + timedelta(days=1)).isoformat()
+    r = rec(status="interviewing", interview_at=tomorrow, interview={"ask_them": ["What does a great first year look like?"]})
+    assert alerts.interviews_on([r], TODAY + timedelta(days=1)) == [r]
+    title, body = alerts.reminder(r, {})
+    assert title == "Interview tomorrow: Paralegal at Acme Law" and "great first year" in body
+    done = rec(status="interviewing", interview_at=TODAY.isoformat())
+    assert alerts.thanks_due([r, done], TODAY) == [done]
+    done["draft_thank_you"] = {"at": jobs.now_iso()}
+    assert alerts.thanks_due([done], TODAY) == []
+
+
+def test_brief_mentions_overnight_drafts():
+    since = datetime.now(timezone.utc) - timedelta(hours=12)
+    r = rec(overnight={"at": jobs.now_iso()}, first_seen="2026-01-01T00:00:00+00:00")
+    title, body = alerts.brief([r], [], TODAY, since)
+    assert title == "Morning: 1 ready to send" and "ready to review:\n- Apply 82" in body
+
+
+def test_first_look_reads_several_and_picks_full_reads(monkeypatch):
+    profile.save({**P, "resumes": [{"name": "Main", "text": "Paralegal with e-filing experience. " * 5}]})
+    ledger = jobs.Ledger()
+    for i, s in enumerate((60, 65)):
+        ledger.jobs[f"greenhouse:{i}"] = {**rec(f"greenhouse:{i}", score=s, by="rules", verdict="Consider"), "description": "Draft pleadings."}
+    calls = []
+    monkeypatch.setattr(ai, "describe_backend", lambda: {"backend": "cli", "label": "test"})
+    monkeypatch.setattr(ai, "triage", lambda recs, text: calls.append([r["key"] for r in recs]) or
+                        {"greenhouse:1": {"fit_score": 72, "verdict": "Apply", "why": "Meets every requirement."},
+                         "greenhouse:0": {"fit_score": 40, "verdict": "Skip", "why": "Needs a certificate."}})
+    handler = web.make_handler(ledger)
+    read = []
+    monkeypatch.setattr(ai, "analyze_job", lambda job, *a, **k: read.append(job["key"]) or
+                        {"fit_score": 74, "qualification_score": 74, "verdict": "Apply", "confidence": "high"})
+    monkeypatch.setattr(web.companies, "key", lambda name: "")
+    handler.first_look(["greenhouse:0", "greenhouse:1"])
+    assert calls == [["greenhouse:1", "greenhouse:0"]]
+    assert ledger.get("greenhouse:0")["triage"]["why"] == "Needs a certificate."
+    assert read == ["greenhouse:1"] and ledger.get("greenhouse:1")["ai"]["fit_score"] == 74
+
+
+def test_triage_is_capped_and_mapped(monkeypatch):
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: {"jobs": [{"n": 1, "fit_score": 95, "why": "Strong"},
+                                                                  {"n": 7, "fit_score": 50, "why": "no such posting"}]})
+    out = ai.triage([{"key": "a:1", "title": "Paralegal"}], "profile")
+    assert out == {"a:1": {"fit_score": ai.TRIAGE_CAP, "verdict": "Apply", "why": "Strong"}}

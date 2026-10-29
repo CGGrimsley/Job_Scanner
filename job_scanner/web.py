@@ -32,6 +32,8 @@ DEFAULT_PORT = 8766
 SETTINGS_DEFAULTS = {"auto_analyze": True, "auto_min_score": 40, "ai_daily_limit": 60,
                      "model_main": "", "model_light": "haiku", "model_auto": "main", "tour_done": False}
 READ_PER_RUN = 5  # Claude reads per watch run, at most
+TRIAGE_MIN = 55  # watched jobs with a quick score this high get a first look (ai.triage) if they missed a full read
+TRIAGE_READS = 3  # full reads per run for jobs the first look rates 70+
 SESSION_COOKIE = "job_scanner_session"
 SESSION_DAYS = 30
 LOGIN_TRIES, LOGIN_WAIT = 5, 900  # wrong passwords from one address, then a 15-minute wait
@@ -231,12 +233,58 @@ def make_handler(ledger: jobs.Ledger):
             if (out.get("skipped") or "").startswith(("Today's", "Automatic analysis is off")):
                 break
 
+    def first_look(keys: list) -> None:
+        """New watched jobs that didn't get a full read (under the 70 floor, or past READ_PER_RUN): one quick-model
+        call takes a first look at up to ai.TRIAGE_MAX of them, and the ones it rates 70+ get the full read next."""
+        p = current_profile()
+        s = app_settings()
+        if profile.is_empty(p) or not s["auto_analyze"] or ai.over_limit() or ai.limited() or not ai.describe_backend()["backend"]:
+            return
+        recs = [r for r in (ledger.get(k) for k in keys) if r and r.get("description") and not r.get("ai")
+                and not r.get("triage") and r["rules"]["score"] >= TRIAGE_MIN]
+        recs.sort(key=lambda r: -r["rules"]["score"])
+        if not recs:
+            return
+        try:
+            looks = ai.triage(recs[:ai.TRIAGE_MAX], profile.for_prompt(p))
+        except ai.AIError as e:
+            print(f"First look: {e}")
+            return
+        ledger.set_triage(looks)
+        good = sorted((k for k, v in looks.items() if v["fit_score"] >= 70), key=lambda k: -looks[k]["fit_score"])
+        for key in good[:TRIAGE_READS]:
+            try:
+                out = analyze(key, auto=True)
+            except (ai.AIError, BadRequest, KeyError):
+                break
+            if (out.get("skipped") or "").startswith(("Today's", "Automatic analysis is off")):
+                break
+
     def after_watch(keys: list) -> None:
-        """New jobs from Watching: Claude reads the strongest, then the ones worth it go to the phone."""
+        """New jobs from Watching: Claude reads the strongest, takes a first look at the rest, then the ones worth it
+        go to the phone."""
         try:
             read_new(keys)
+            first_look(keys)
         finally:
             push(keys)
+
+    def prep_interview(key: str) -> None:
+        """When a job moves to Interviewing: the employer read and interview prep, in the background, so they're
+        ready before you look."""
+        def go():
+            rec = ledger.get(key)
+            if not rec or rec.get("interview") or profile.is_empty(current_profile()):
+                return
+            try:
+                read = company(rec, priority=1, auto=True)
+                prep = ai.interview_prep(rec, profile.for_prompt(current_profile()), companies.context(read).lstrip("- "),
+                                         rec.get("notes") or "")
+                ledger.set_doc(key, "interview", prep)
+            except ai.AIError as e:
+                print(f"Interview prep: {e}")
+        if ai.describe_backend()["backend"]:
+            threading.Thread(target=go, name="interview-prep", daemon=True).start()
 
     def push(keys: list) -> list:
         cfg = alerts.config()
@@ -303,15 +351,110 @@ def make_handler(ledger: jobs.Ledger):
         alerts.save_state(st)
         return out
 
+    aliasing = {"running": False}
+
+    def maybe_aliases() -> bool:
+        """When the target titles change, Claude suggests the other titles employers use for the same jobs (light
+        model, in the background); they're added to the profile and everything is rescored."""
+        if aliasing["running"] or not ai.describe_backend()["backend"] or not profile.aliases_due(current_profile()):
+            return False
+        aliasing["running"] = True
+
+        def go():
+            try:
+                p = current_profile()
+                found = ai.title_aliases(p["target_titles"], p["seniority"])
+                now_p = current_profile()
+                if now_p["target_titles"] != p["target_titles"]:
+                    return  # changed meanwhile: the next round suggests for the new ones
+                state["profile"] = profile.save(profile.merge_aliases(now_p, found))
+                ledger.rescore_all(state["profile"])
+            except ai.AIError as e:
+                profile.aliases_failed()
+                print(f"Title suggestions: {e}")
+            finally:
+                aliasing["running"] = False
+        threading.Thread(target=go, name="aliases", daemon=True).start()
+        return True
+
     def housekeeping(now: datetime | None = None) -> None:
-        """Every few minutes: set Watching up if it's due, and send the morning brief once a day."""
+        """Every few minutes: set Watching up if it's due, suggest other titles for new target roles, and send the
+        morning brief once a day."""
         try:
             maybe_autosetup()
         except BadRequest:
             pass
+        maybe_aliases()
         now = now or datetime.now().astimezone()  # local time: the brief goes at the person's morning (TZ in Docker)
-        if alerts.brief_due(now, alerts.config(), alerts.state().get("brief_date") or ""):
+        cfg = alerts.config()
+        st = alerts.state()
+        if alerts.at_hour(now, cfg["drafts_hour"], st.get("drafts_date") or "") and int(cfg["drafts_per_night"] or 0) > 0:
+            st["drafts_date"] = now.date().isoformat()
+            alerts.save_state(st)
+            draft_overnight(now, int(cfg["drafts_per_night"]))
+        draft_thanks(now.date())
+        if alerts.on(cfg) and alerts.at_hour(now, cfg["evening_hour"], alerts.state().get("evening_date") or ""):
+            remind_interviews(now.date(), cfg)
+        if alerts.brief_due(now, cfg, alerts.state().get("brief_date") or ""):
             send_brief(now)
+
+    def ai_free() -> bool:
+        """Whether automatic Claude work may run now: set up, automatic reads on, and within today's limit."""
+        return bool(ai.describe_backend()["backend"]) and app_settings()["auto_analyze"] and not ai.over_limit() \
+            and not ai.limited() and not profile.is_empty(current_profile())
+
+    def draft_overnight(now: datetime, n: int) -> list:
+        """Easy apply, as drafts, for the best new Apply jobs: assessment, tailored résumé, cover letter and likely
+        answers, ready in the morning. The job isn't saved to the tracker; that's the person's call."""
+        done = []
+        if not current_profile()["resumes"]:
+            return done
+        for rec in alerts.draft_candidates(list(ledger.jobs.values()), n, now):
+            if not ai_free():
+                break
+            try:
+                out = easy_apply(rec["key"], {}, save=False)
+            except (ai.AIError, BadRequest, KeyError) as e:
+                print(f"Overnight draft: {e}")
+                break
+            if out.get("errors") and len(out["errors"]) >= 3:
+                break
+            ledger.set_doc(rec["key"], "overnight", {"errors": list((out.get("errors") or {}).keys())})
+            done.append(rec["key"])
+        return done
+
+    thanks_wait = {"until": 0.0}
+
+    def draft_thanks(today) -> list:
+        """A thank-you note drafted the day of each interview (from your notes), for you to edit and send. After a
+        failure, waits an hour before trying again."""
+        done = []
+        if time.time() < thanks_wait["until"]:
+            return done
+        for rec in alerts.thanks_due(list(ledger.jobs.values()), today):
+            if not ai_free():
+                break
+            try:
+                msg = ai.draft_message(rec, profile.for_prompt(current_profile()), "thank_you", rec.get("notes") or "")
+            except ai.AIError as e:
+                print(f"Thank-you draft: {e}")
+                thanks_wait["until"] = time.time() + 3600
+                break
+            ledger.set_doc(rec["key"], "draft_thank_you", msg)
+            done.append(rec["key"])
+        return done
+
+    def remind_interviews(today, cfg: dict) -> None:
+        st = alerts.state()
+        st["evening_date"] = today.isoformat()
+        for rec in alerts.interviews_on(list(ledger.jobs.values()), today + timedelta(days=1)):
+            title, body = alerts.reminder(rec, cfg)
+            try:
+                alerts.send(cfg, title, body, alerts.app_link(cfg, rec["key"]), tags="calendar", priority="high")
+            except alerts.AlertError as e:
+                st.update(errors=int(st.get("errors") or 0) + 1, last_error=str(e), error_at=jobs.now_iso())
+                break
+        alerts.save_state(st)
 
     def start_run(only=None) -> None:
         def go():
@@ -360,9 +503,10 @@ def make_handler(ledger: jobs.Ledger):
             raise BadRequest("Add a résumé on your Profile first: answers are written from it.")
         return ai.answer_questions(rec, profile.for_prompt(p), profile.apply_facts(p), questions)
 
-    def easy_apply(key: str, data: dict) -> dict:
+    def easy_apply(key: str, data: dict, save: bool = True) -> dict:
         """Everything for one application in one go: Claude's assessment, a tailored résumé, a cover letter and
-        answers to the questions the form will likely ask, all from the same résumé. Saves the job to the tracker."""
+        answers to the questions the form will likely ask, all from the same résumé. Saves the job to the tracker
+        (unless `save` is off: the overnight drafts leave that to the person)."""
         rec = ledger.get(key)
         if rec is None:
             raise KeyError(key)
@@ -402,7 +546,7 @@ def make_handler(ledger: jobs.Ledger):
         if all(k in errors for k in ("tailored", "letter", "answers")):
             raise ai.AIError(errors["tailored"])
         rec = ledger.get(key)
-        if rec.get("status") in ("", "dismissed"):
+        if save and rec.get("status") in ("", "dismissed"):
             ledger.update(key, {"status": "saved"})
         rec = ledger.set_doc(key, "packet", {"resume": name})
         return {"job": ledger.public(rec), "mark": ledger.mark(rec), "errors": errors}
@@ -758,6 +902,7 @@ def make_handler(ledger: jobs.Ledger):
                 if data.get("rescore", True):
                     ledger.rescore_all(state["profile"])
                 maybe_autosetup()
+                maybe_aliases()
                 return self._json({"profile": state["profile"], "counts": ledger.counts()})
             if path == "/api/profile/resume-file":
                 try:
@@ -887,7 +1032,8 @@ def make_handler(ledger: jobs.Ledger):
                         if v and not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", v):
                             raise BadRequest(f"{'The ntfy server' if k == 'phone_server' else 'The app address'} must start with https://")
                         changes[k] = v
-                for k, lo, hi in (("phone_min", 0, 100), ("brief_hour", -1, 23)):
+                for k, lo, hi in (("phone_min", 0, 100), ("brief_hour", -1, 23), ("drafts_per_night", 0, 5),
+                                  ("drafts_hour", -1, 23), ("evening_hour", -1, 23)):
                     if k in data:
                         try:
                             changes[k] = max(lo, min(hi, int(data[k])))
@@ -962,7 +1108,10 @@ def make_handler(ledger: jobs.Ledger):
                     msg = ai.draft_message(rec, profile.for_prompt(current_profile()), kind, rec.get("notes") or "")
                     return self._json({"job": ledger.public(ledger.set_doc(key, f"draft_{kind}", msg)), "message": msg})
                 if action == "update":
-                    return self._json({"job": ledger.public(ledger.update(key, data))})
+                    rec = ledger.update(key, data)
+                    if data.get("status") == "interviewing":
+                        prep_interview(key)
+                    return self._json({"job": ledger.public(rec)})
                 if action == "delete":
                     ledger.delete(key)
                     return self._json({"ok": True})
@@ -971,6 +1120,8 @@ def make_handler(ledger: jobs.Ledger):
     Handler.read_new = staticmethod(read_new)
     Handler.after_watch = staticmethod(after_watch)
     Handler.housekeeping = staticmethod(housekeeping)
+    Handler.draft_overnight = staticmethod(draft_overnight)
+    Handler.first_look = staticmethod(first_look)
     Handler.current_profile = staticmethod(current_profile)
     return Handler
 

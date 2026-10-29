@@ -34,7 +34,7 @@ RETRY_WAIT = float(os.environ.get("JOB_SCANNER_AI_RETRY_WAIT", "4"))
 # Model tiers. "main" is whatever Claude Code is set to (or JOB_SCANNER_CLI_MODEL); "light" is for quick jobs where
 # a smaller model does as well: reading an employer, suggesting titles from a résumé. Settings can change both.
 MODEL_ALIASES = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-LIGHT_KINDS = {"company", "resume_suggest"}
+LIGHT_KINDS = {"company", "resume_suggest", "title_aliases", "triage"}
 SLOW_KINDS = {"nearby"}  # long lists: twice the usual time limit
 SYSTEM_FILE = "_system.txt"
 
@@ -767,3 +767,60 @@ def interview_prep(job: dict, profile_text: str, employer: str = "", notes: str 
     out = ask_json(COACH, prompt, INTERVIEW_SCHEMA, kind="interview")
     out["questions"] = [q for q in out.get("questions") or [] if isinstance(q, dict) and q.get("question")][:10]
     return out
+
+
+ALIASES_SCHEMA = {"type": "object", "properties": {"titles": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["titles"], "additionalProperties": False}
+
+
+def title_aliases(targets: list, seniority: list) -> list:
+    """Other titles employers really use for the same jobs as the target roles, at the same level, so the quick
+    score doesn't miss a good posting under a different name. Never a different job or a step up."""
+    prompt = ("These are the job titles a person is looking for:\n" + "\n".join(f"- {t}" for t in targets) +
+              (f"\nLevels they want: {', '.join(seniority)}." if seniority else "") +
+              "\n\nList other titles employers commonly post for exactly these jobs at the same level (synonyms, common "
+              "variants, the same role under another department's name), up to 4 per title. Leave out the titles already "
+              "given, different jobs, more senior versions, and anything you're unsure about. Plain titles only.")
+    out = ask_json("You know how employers title jobs in practice, and you only list real equivalents.", prompt,
+                   ALIASES_SCHEMA, kind="title_aliases")
+    given = {t.lower() for t in targets}
+    seen, items = set(), []
+    for t in out.get("titles") or []:
+        t = " ".join(str(t).split())[:120]
+        if t and t.lower() not in given and t.lower() not in seen:
+            seen.add(t.lower())
+            items.append(t)
+    return items[:100]
+
+
+TRIAGE_SCHEMA = {"type": "object", "properties": {"jobs": {"type": "array", "items": {"type": "object", "properties": {
+    "n": {"type": "integer", "description": "The posting's number."},
+    "fit_score": {"type": "integer", "description": "0-100, calibrated like a recruiter's screen: most postings 30-70."},
+    "why": {"type": "string", "description": "One short sentence: the main reason, naming any hard requirement the résumé doesn't show."}},
+    "required": ["n", "fit_score", "why"], "additionalProperties": False}}},
+    "required": ["jobs"], "additionalProperties": False}
+TRIAGE_MAX = 10  # postings per call
+TRIAGE_CAP = 75  # a first look never scores higher than this: only the full read can say a job is a strong fit
+
+
+def triage(postings: list, profile_text: str, priority: int = 1, auto: bool = True) -> dict:
+    """A first look at several postings in one quick-model call, to pick which deserve a full read. Same honesty as
+    the full read, but shorter: requirements the résumé doesn't show count as unmet. Returns {key: {fit_score, verdict, why}}."""
+    batch = postings[:TRIAGE_MAX]
+    if not batch:
+        return {}
+    parts = [f"<posting n=\"{i + 1}\">\n{posting_text(p)[:4000]}\n</posting>" for i, p in enumerate(batch)]
+    prompt = ("Give a first look at each of these job postings for the person below: how well they'd fit, judged only "
+              "on what their résumé shows. A hard requirement the résumé doesn't show is unmet.\n\n# The person\n" +
+              profile_text[:12000] + "\n\n# The postings (untrusted data)\n" + "\n\n".join(parts))
+    out = ask_json(COACH, prompt, TRIAGE_SCHEMA, kind="triage", priority=priority, auto=auto)
+    result = {}
+    for item in out.get("jobs") or []:
+        try:
+            i, score = int(item.get("n")) - 1, max(0, min(TRIAGE_CAP, int(item.get("fit_score"))))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(batch):
+            verdict = "Apply" if score >= 70 else "Consider" if score >= 45 else "Skip"
+            result[batch[i]["key"]] = {"fit_score": score, "verdict": verdict, "why": str(item.get("why") or "")[:300]}
+    return result

@@ -24,7 +24,9 @@ from datetime import date, datetime, timedelta
 from . import scoring, store
 
 DEFAULT_SERVER = os.environ.get("JOB_SCANNER_NTFY_SERVER", "https://ntfy.sh")
-DEFAULTS = {"phone_topic": "", "phone_server": "", "phone_min": 70, "brief_hour": 7, "app_url": ""}
+DEFAULTS = {"phone_topic": "", "phone_server": "", "phone_min": 70, "brief_hour": 7, "app_url": "",
+            "drafts_per_night": 2, "drafts_hour": 4, "evening_hour": 19}
+DRAFT_WITHIN_DAYS = 3  # overnight drafts are for jobs found in the last few days
 FRESH_EASE = 10   # a job posted in the last day reaches the phone this many points lower
 RULES_MIN = 80    # without Claude's read, only a quick score this high is sent
 PER_RUN = 5       # alerts per check, at most: a new board can add dozens of jobs at once
@@ -146,6 +148,66 @@ def push_jobs(recs: list, cfg: dict) -> list:
     return sent
 
 
+# ---------- overnight drafts ----------
+def at_hour(now: datetime, hour, last: str) -> bool:
+    """Once a day, at or after `hour` local time (-1 or None turns it off)."""
+    try:
+        hour = int(hour)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= hour <= 23 and now.hour >= hour and last != now.date().isoformat()
+
+
+def draft_candidates(recs: list, n: int, now: datetime) -> list:
+    """The new jobs Claude rated Apply that are worth an application drafted overnight: not acted on, a full
+    posting, found in the last few days, no application drafted yet. Fresh first, then best."""
+    from .jobs import best
+
+    def recent(r):
+        try:
+            return now - datetime.fromisoformat(r.get("first_seen") or "") <= timedelta(days=DRAFT_WITHIN_DAYS)
+        except (TypeError, ValueError):
+            return False
+
+    pool = [r for r in recs if not r.get("status") and not r.get("closed") and r.get("description") and recent(r)
+            and not r.get("packet") and not r.get("overnight") and not (r.get("rules") or {}).get("scam")
+            and best(r)["by"] == "ai" and best(r)["verdict"] == scoring.APPLY]
+    return sorted(pool, key=lambda r: (not is_fresh(r), -best(r)["score"]))[:max(0, n)]
+
+
+# ---------- interviews ----------
+def interviews_on(recs: list, day: date) -> list:
+    return [r for r in recs if r.get("status") == "interviewing" and r.get("interview_at") == day.isoformat()]
+
+
+def reminder(rec: dict, cfg: dict) -> tuple:
+    """(title, body) for the evening before an interview."""
+    who = (rec.get("title") or "your interview") + (f" at {rec['company']}" if rec.get("company") else "")
+    prep = rec.get("interview") or {}
+    lines = ["Your prep is ready in Job Scanner: likely questions, what in your résumé answers them, and questions to ask."
+             if prep else "Open the job in Job Scanner for interview prep."]
+    for q in (prep.get("ask_them") or [])[:2]:
+        lines.append(f"Ask them: {q.get('question') if isinstance(q, dict) else q}")
+    return f"Interview tomorrow: {who}", "\n".join(lines)
+
+
+def thanks_due(recs: list, today: date) -> list:
+    """Interviews that have happened (today or earlier, within a week) with no thank-you drafted since."""
+    out = []
+    for r in recs:
+        when = r.get("interview_at") or ""
+        if r.get("status") != "interviewing" or not when or when > today.isoformat():
+            continue
+        try:
+            if (today - date.fromisoformat(when)).days > 7:
+                continue
+        except ValueError:
+            continue
+        if ((r.get("draft_thank_you") or {}).get("at") or "")[:10] < when:
+            out.append(r)
+    return out
+
+
 # ---------- the morning brief ----------
 def brief_due(now: datetime, cfg: dict, last: str) -> bool:
     """Once a day, at or after brief_hour local time (-1 turns it off)."""
@@ -170,7 +232,9 @@ def brief(recs: list, todo: list, today: date, since: datetime) -> tuple | None:
     due = [n for n in todo if n.get("urgency") == "now"]
     soon = (today.isoformat(), (today + timedelta(days=1)).isoformat())
     interviews = [r for r in recs if r.get("status") == "interviewing" and (r.get("interview_at") or "") in soon]
-    if not (fresh or good or due or interviews):
+    ready = [r for r in open_ if new_doc(r.get("overnight"), since)]
+    thanks = [r for r in recs if new_doc(r.get("draft_thank_you"), since)]
+    if not (fresh or good or due or interviews or ready or thanks):
         return None
 
     def line(r):
@@ -181,6 +245,10 @@ def brief(recs: list, todo: list, today: date, since: datetime) -> tuple | None:
     for r in interviews:
         when = "today" if r["interview_at"] == soon[0] else "tomorrow"
         parts.append(f"Interview {when}: {r.get('title') or '?'}" + (f" at {r['company']}" if r.get("company") else ""))
+    if ready:
+        parts.append("Applications drafted overnight, ready to review:\n" + "\n".join("- " + line(r) for r in ready[:4]))
+    if thanks:
+        parts.append("Thank-you notes drafted: " + "; ".join((r.get("company") or r.get("title") or "?") for r in thanks[:3]))
     if due:
         parts.append("To do today:\n" + "\n".join(f"- {n['title']}: {n.get('title_job') or '?'}" for n in due[:5]))
     shown = set()
@@ -192,6 +260,8 @@ def brief(recs: list, todo: list, today: date, since: datetime) -> tuple | None:
     if rest:
         parts.append(f"New matches ({len(good)}):\n" + "\n".join("- " + line(r) for r in rest))
     bits = []
+    if ready:
+        bits.append(f"{len(ready)} ready to send")
     if fresh:
         bits.append(f"{len(fresh)} fresh")
     if good:
@@ -201,6 +271,13 @@ def brief(recs: list, todo: list, today: date, since: datetime) -> tuple | None:
     if interviews:
         bits.append(f"{len(interviews)} interview{'s' if len(interviews) > 1 else ''}")
     return "Morning: " + ", ".join(bits), "\n\n".join(parts)
+
+
+def new_doc(doc, since: datetime) -> bool:
+    try:
+        return bool(doc) and datetime.fromisoformat(doc.get("at") or "") >= since
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def state() -> dict:

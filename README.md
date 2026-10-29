@@ -12,12 +12,15 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 - **Tracker to-dos.** From the dates you record, the tracker tells you when to apply, reach out to someone at the company, follow up (after a week, again after two), prepare for an interview, send a thank-you, and answer an offer. Claude drafts each message for you to edit.
 - **Several résumés.** Claude reads them all as evidence of what you've done, and it tells you which one to send for each job.
 - **Discover.** Search links tuned to surface the postings worth seeing (newest first, posted in the last day or week, your remote/hybrid/on-site choice, your avoid-list words left out) on LinkedIn, Indeed, USAJobs and Google Jobs, for your target roles and for roles Claude says your résumés already fit but you aren't searching for. They open in your browser; the app never searches job sites itself.
-- **Learns from what you pass on.** When you keep passing on the same employer, title word, level, on-site jobs or staffing agencies, Discover suggests lowering their scores. Nothing changes until you approve it, every lowered score says why, and you can undo it.
+- **Learns from what you pass on and what you go for.** When you keep passing on the same employer, title word, level, on-site jobs or staffing agencies, Discover suggests lowering their scores; when you keep saving and applying to them (an interview counts twice), it suggests raising them. Nothing changes until you approve it, every lowered score says why, and you can undo it.
 - **Interview prep** for any job: likely questions, what in your résumé answers each one (or that nothing does), and questions to ask them.
 - **Résumé check** on Insights: what application systems trip on (missing headings, dates, contact details, length) and the keywords your target jobs keep asking for that your résumés never mention.
 - **Home** shows your next setup step, what needs you today and the best new matches. A short guide walks new users through setup (Skip for now, or Don't show this again; it's on Setup if you want it back), and everything it asks for can be changed later.
 - **On your phone.** Strong matches the app finds by itself go to your phone through [ntfy](https://ntfy.sh) once Claude has read them, and a morning brief lists fresh jobs, new matches, follow-ups due and interviews coming up. See *Your phone* below.
 - **Fresh first.** Jobs posted today or yesterday are marked *Fresh*, lead Home and get 10 points of slack for phone alerts: applying in the first day or two matters most.
+- **Applications drafted overnight.** For your best new Apply jobs, Job Scanner runs Easy apply's drafts while you sleep (tailored résumé, cover letter, likely answers) so they're ready to review in the morning. It never applies or saves them to your tracker for you.
+- **Titles under other names count.** Claude suggests the other titles employers use for your target roles ("Other titles that count" on your Profile), so a good job under a different name isn't scored as off-target. Delete any that aren't right; they won't come back.
+- **Interview autopilot.** Mark a job Interviewing and the prep and employer read are made straight away; the evening before, your phone gets a reminder with questions to ask; on the day, a thank-you note is drafted from your notes.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
 It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so on those sites it works the way you browse and nothing more. The app can also check some sources by itself, but only ones that publish their jobs for programs to read (see Watching).
@@ -64,7 +67,7 @@ Run Job Scanner on a homelab box and use it from any computer on your network. T
 4. **Open** `http://<server-ip>:8766`, sign in with the password, and fill in your Profile.
 5. **Connect the extension** on each computer: load the `extension` folder (step 5 above), open its **Settings**, set the app address to `http://<server-ip>:8766`, allow the permission Chrome asks for, paste the pairing token from the app's **Setup** page and click **Save & test**. (One-click connecting only works when the app runs on the same computer as Chrome.)
 
-Your data lives in the `job-scanner-data` Docker volume (`/data` in the container), with the same nightly backups; Watching checks your sources every 4 hours (change it on the Watching page) as long as the container runs. To update: `git pull && docker compose up -d --build`.
+Your data lives in the `job-scanner-data` Docker volume (`/data` in the container), with the same nightly backups; Watching checks your sources every 4 hours (change it on the Watching page) as long as the container runs. To update: `git pull && docker compose up -d --build`, or let it update itself: `scripts/update.sh` pulls and rebuilds only when there's something new, so run it from cron (`*/30 * * * * /path/to/Job_Scanner/scripts/update.sh >> /var/log/job-scanner-update.log 2>&1`).
 
 **Behind a reverse proxy** (Caddy, Traefik, Nginx Proxy Manager): add the proxy's host name to `JOB_SCANNER_ALLOWED_HOSTS`, and make sure the proxy passes the original `Host` header (Caddy and Traefik do; with plain nginx add `proxy_set_header Host $host;` and `proxy_set_header X-Forwarded-Proto $scheme;`). Over HTTPS the sign-in cookie is marked Secure. Keep it on your LAN or behind a VPN such as Tailscale rather than open to the internet: it holds your résumé and runs Claude on your plan.
 
@@ -105,8 +108,10 @@ On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years
 
 The **Watching** page sets up sources the app checks by itself, every hour while it's running. **It sets itself up:** once your Profile has places and target roles, the app finds the employers near you (below) and watches every job board it can confirm is theirs, then checks them straight away. It does this again when your places change (a failed attempt waits a day), and you can turn it off or rerun it with **Set it up for me**. Boards found only by guessing a name are never watched without you. Jobs worth a
 look are added to your Jobs list like the ones you browse. These are jobs with a quick score of 45 or more (adjustable)
-in one of your places, or remote if you take remote work. Strong matches get a desktop notification, and Claude reads
-the best few from each check (score 70 or more, at most 5) within your daily limit.
+in one of your places, or remote if you take remote work. Claude reads the best few from each check (score 70 or more,
+at most 5) within your daily limit, then takes one quick-model *first look* at up to 10 more (quick score 55+) and gives
+the full read to the ones it rates 70+. A first look never scores above 75 and doesn't replace the full read. Strong
+matches go to your phone (see *Your phone*) and to Chrome.
 
 - **Employers near you.** Claude lists the prominent employers around your Profile's places that hire for your roles,
   with each one's careers page and the job board it uses. The list comes from Claude's general knowledge, so it can be
@@ -130,11 +135,13 @@ and states use, disallows every program but search engines in its robots.txt, so
 On **Setup → Your phone**, paste an [ntfy](https://ntfy.sh) topic (free, no account: install the ntfy app on your phone and subscribe to the same topic; **Make one** picks a random name, and anyone who knows it can read your alerts). Then:
 
 - A job Watching finds reaches your phone once Claude has read it and rated it *Apply* at your threshold (70 by default; a job posted in the last day gets 10 points of slack). If Claude couldn't read it (off, or the day's limit is used up), only a quick score of 80+ is sent, and the alert says so. At most 5 per check, each job once. Tapping one opens the posting; set *This app's address* for an "In Job Scanner" button too.
-- The **morning brief** goes once a day at the hour you pick (local time; in Docker set `TZ` in `.env`): interviews today or tomorrow, to-dos due, jobs posted in the last day and new Apply matches since the last brief. Nothing is sent on a day with nothing to say.
+- **Overnight drafts** (up to 2 a night by default, at 4am local; each uses about 4 Claude calls of your daily limit): the best new Apply jobs from the last few days get a tailored résumé, a cover letter and likely answers, marked *Ready to review* on Home and Jobs.
+- **The evening before an interview** (7pm by default) your phone gets a reminder with a couple of questions to ask. Add the interview date on the job so it knows.
+- The **morning brief** goes once a day at the hour you pick (local time; in Docker set `TZ` in `.env`): interviews today or tomorrow, applications drafted overnight, thank-you notes drafted, to-dos due, jobs posted in the last day and new Apply matches since the last brief. Nothing is sent on a day with nothing to say.
 
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved), `insights.json`, `alerts.json` (when the last brief and alert went), and `watch.json` / `watch_state.json` (what's watched and how each check went; API keys and the mail app password for Watching are kept there on your computer only, and are never sent back to the page). Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved), `insights.json`, `alerts.json` (when the last brief and alert went), `titles.json` (the last title suggestion), and `watch.json` / `watch_state.json` (what's watched and how each check went; API keys and the mail app password for Watching are kept there on your computer only, and are never sent back to the page). Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
 
 ## Credits
 

@@ -59,14 +59,14 @@ const FILTER_SELECTS = ["source", "verdict", "fresh", "sort", "remote", "max_yea
 const factTags = (j) => (j.fact_tags || []).map((t) => `<span class="tag fact">${esc(t)}</span>`).join("");
 function jobRow(j) {
   const b = j.best, r = j.rules || {};
-  const why = j.ai ? j.ai.summary : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
+  const why = j.ai ? j.ai.summary : j.triage ? `First look (${j.triage.fit_score}): ${j.triage.why}` : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
   const pay = j.pay_text || (r.pay_max ? `up to ${money(r.pay_max)}` : "");
   return `<article class="job" data-key="${esc(j.key)}">
     <div class="score ${b.verdict}">${b.score}<small>${b.by === "ai" ? "✦ " : ""}${b.verdict}</small></div>
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${j.fresh ? `<span class="tag fresh" title="Posted today or yesterday: apply early">Fresh</span>` : ""}${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${j.fresh ? `<span class="tag fresh" title="Posted today or yesterday: apply early">Fresh</span>` : ""}${j.overnight && !j.status ? `<span class="tag fresh" title="Résumé, cover letter and answers drafted overnight">Ready to review</span>` : ""}${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
@@ -486,6 +486,7 @@ function showProfile() {
       <div class="grid2">
         <div class="card"><h2>2. What you're looking for</h2>
           <label class="f">Job titles you want <small>Suggested from your résumés; add your own, one per line</small><textarea name="target_titles" style="min-height:90px">${esc(p.target_titles.join("\n"))}</textarea></label>
+          <label class="f">Other titles that count <small>The same jobs under other names, so a good posting isn't missed. Claude suggests these when your titles change; delete any that aren't right and they won't come back.</small><textarea name="title_aliases" style="min-height:60px">${esc((p.title_aliases || []).join("\n"))}</textarea></label>
           <label class="f">Your skills <small>Comma or line separated: tools, certifications, specialties</small><textarea name="skills" style="min-height:90px">${esc(p.skills.join(", "))}</textarea></label>
           <div class="f"><label for="place-q">Locations</label> <small class="note">Start typing a city or state and pick it. A state covers every job in it.</small>
             <div class="chips" id="places"></div>
@@ -523,7 +524,7 @@ function showProfile() {
     const out = {};
     for (const k of ["name", "about_me", "dealbreakers", "min_salary", "years_experience"]) out[k] = fd.get(k);
     out.resumes = resumes();
-    for (const k of ["target_titles", "skills", "avoid_keywords"]) out[k] = fd.get(k);
+    for (const k of ["target_titles", "title_aliases", "skills", "avoid_keywords"]) out[k] = fd.get(k);
     out.locations = chosenPlaces;
     for (const k of ["remote", "job_types", "seniority"]) out[k] = fd.getAll(k);
     out.max_age_days = S.profile.max_age_days;
@@ -828,11 +829,13 @@ function boardLink(b) {
 function phoneCard(s) {
   const hours = [[-1, "No morning brief"], ...Array.from({ length: 24 }, (_, h) => [h, `${String(h).padStart(2, "0")}:00`])];
   return `<div class="card"><h2>Your phone</h2>
-    <p class="note">Job Scanner sends strong matches it finds by itself to your phone, once Claude has read them, and a short brief each morning: fresh jobs, new matches, follow-ups due and interviews coming up. It uses <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a>, which is free with no account. Install the ntfy app, subscribe to a topic name only you know, and paste it here. Anyone who knows the name can read the alerts, so keep it long and random.</p>
+    <p class="note">Job Scanner sends strong matches it finds by itself to your phone, once Claude has read them, and a short brief each morning: fresh jobs, applications drafted overnight, new matches, follow-ups due and interviews coming up. It uses <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a>, which is free with no account. Install the ntfy app, subscribe to a topic name only you know, and paste it here. Anyone who knows the name can read the alerts, so keep it long and random.</p>
     <div class="grid2">
       <label class="f">ntfy topic <span class="token"><input id="ph-topic" value="${esc(s.phone_topic)}" placeholder="e.g. jobs-k3v9q2x7m1" autocomplete="off"><button class="btn small" id="ph-make" type="button">Make one</button></span></label>
       <label class="f">Send a job when Claude rates it Apply at least <small>Jobs posted in the last day get 10 points of slack. Without Claude's read, only a quick score of 80+ is sent.</small><input type="number" id="ph-min" min="0" max="100" value="${s.phone_min}"></label>
       <label class="f">Morning brief at <small>This server's local time</small><select id="ph-brief">${hours.map(([v, l]) => `<option value="${v}" ${+s.brief_hour === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="f">Draft applications overnight <small>For the best new Apply jobs: tailored résumé, cover letter and likely answers, ready in the morning. Each one uses about 4 Claude calls of your daily limit.</small><select id="ph-drafts">${[0, 1, 2, 3, 5].map((n) => `<option value="${n}" ${+s.drafts_per_night === n ? "selected" : ""}>${n ? `Up to ${n} a night` : "Don't draft overnight"}</option>`).join("")}</select></label>
+      <label class="f">Remind me the evening before an interview at <select id="ph-evening">${hours.map(([v, l]) => `<option value="${v}" ${+s.evening_hour === v ? "selected" : ""}>${v < 0 ? "No reminder" : l}</option>`).join("")}</select></label>
       <label class="f">This app's address <small>For the "In Job Scanner" button on alerts, e.g. https://jobs.example.com</small><input id="ph-app" value="${esc(s.app_url)}" placeholder="${esc(location.origin)}"></label>
     </div>
     <details><summary>Your own ntfy server</summary><label class="f">ntfy server <input id="ph-server" value="${esc(s.phone_server)}" placeholder="https://ntfy.sh"></label></details>
@@ -847,7 +850,7 @@ function bindPhone() {
   });
   const save = async () => {
     const outS = await api("/api/settings", { phone_topic: $("#ph-topic").value, phone_min: $("#ph-min").value, brief_hour: $("#ph-brief").value,
-      app_url: $("#ph-app").value, phone_server: $("#ph-server").value });
+      app_url: $("#ph-app").value, phone_server: $("#ph-server").value, drafts_per_night: $("#ph-drafts").value, evening_hour: $("#ph-evening").value });
     S.settings = outS.settings;
   };
   $("#ph-save").addEventListener("click", async () => { try { await save(); toast("Saved."); } catch (err) { toast(err.message); } });
