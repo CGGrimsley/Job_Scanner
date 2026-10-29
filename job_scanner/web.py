@@ -15,13 +15,13 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import __version__, advice, ai, companies, discover, docx, feeds, health, insights, jobs, learn, mail, nearby, pdf, places, profile, resume, resume_check, signals, startup, store, watch
+from . import __version__, advice, ai, alerts, companies, discover, docx, feeds, health, insights, jobs, learn, mail, nearby, pdf, places, profile, resume, resume_check, signals, startup, store, watch
 
 STATIC = Path(__file__).with_name("static")
 EXTENSION_MANIFEST = Path(__file__).resolve().parent.parent / "extension" / "manifest.json"
@@ -47,6 +47,7 @@ def app_settings() -> dict:
     out = {k: s.get(k, v) for k, v in SETTINGS_DEFAULTS.items()}
     out["startup_supported"] = startup.supported()
     out["start_with_windows"] = startup.enabled()
+    out.update(alerts.config())
     return out
 
 
@@ -230,11 +231,93 @@ def make_handler(ledger: jobs.Ledger):
             if (out.get("skipped") or "").startswith(("Today's", "Automatic analysis is off")):
                 break
 
+    def after_watch(keys: list) -> None:
+        """New jobs from Watching: Claude reads the strongest, then the ones worth it go to the phone."""
+        try:
+            read_new(keys)
+        finally:
+            push(keys)
+
+    def push(keys: list) -> list:
+        cfg = alerts.config()
+        if not alerts.on(cfg):
+            return []
+        st = alerts.state()
+        try:
+            sent = alerts.push_jobs([r for r in (ledger.get(k) for k in keys) if r], cfg)
+            st.update(errors=0, last_error="")
+        except alerts.AlertError as e:
+            sent = []
+            st.update(errors=int(st.get("errors") or 0) + 1, last_error=str(e), error_at=jobs.now_iso())
+        if sent:
+            ledger.mark_pushed(sent)
+            st["last_push"] = jobs.now_iso()
+        alerts.save_state(st)
+        return sent
+
+    setting_up = {"running": False}
+
+    def maybe_autosetup(force: bool = False) -> bool:
+        """Set Watching up from the profile in the background (employers near you, confirmed boards watched), then
+        check them right away. Needs Claude for the employer list."""
+        p = current_profile()
+        if setting_up["running"] or not ai.describe_backend()["backend"]:
+            return False
+        if not force and not watch.autosetup_due(watch.load(), p, watch.state()):
+            return False
+        if force and not p["locations"]:
+            raise BadRequest("Add the places you'd work on your Profile first.")
+        setting_up["running"] = True
+
+        def go():
+            try:
+                done = watch.autosetup(p, nearby.find)
+                if done["watched"]:
+                    start_run()
+            except Exception as e:  # noqa: BLE001 - a failed set-up is recorded and tried again tomorrow
+                print(f"Watching set-up: {e}")
+            finally:
+                setting_up["running"] = False
+        threading.Thread(target=go, name="watch-setup", daemon=True).start()
+        return True
+
+    def send_brief(now: datetime) -> str:
+        """Send the morning brief now. Returns "sent", "nothing" (nothing to say) or the error."""
+        cfg = alerts.config()
+        st = alerts.state()
+        try:
+            since = datetime.fromisoformat(st["brief_at"]) if st.get("brief_at") else now - timedelta(days=1)
+        except ValueError:
+            since = now - timedelta(days=1)
+        recs = list(ledger.jobs.values())
+        msg = alerts.brief(recs, advice.todo(recs, now.date()), now.date(), since)
+        st.update(brief_date=now.date().isoformat(), brief_at=jobs.now_iso())
+        out = "nothing"
+        if msg:
+            try:
+                alerts.send(cfg, msg[0], msg[1], alerts.app_link(cfg), tags="sunrise")
+                out = "sent"
+            except alerts.AlertError as e:
+                out = str(e)
+                st.update(errors=int(st.get("errors") or 0) + 1, last_error=out, error_at=jobs.now_iso())
+        alerts.save_state(st)
+        return out
+
+    def housekeeping(now: datetime | None = None) -> None:
+        """Every few minutes: set Watching up if it's due, and send the morning brief once a day."""
+        try:
+            maybe_autosetup()
+        except BadRequest:
+            pass
+        now = now or datetime.now().astimezone()  # local time: the brief goes at the person's morning (TZ in Docker)
+        if alerts.brief_due(now, alerts.config(), alerts.state().get("brief_date") or ""):
+            send_brief(now)
+
     def start_run(only=None) -> None:
         def go():
             watching["running"] = True
             try:
-                watch.run(ledger, current_profile(), only=only, on_new=read_new)
+                watch.run(ledger, current_profile(), only=only, on_new=after_watch)
             finally:
                 watching["running"] = False
         threading.Thread(target=go, name="watch-now", daemon=True).start()
@@ -607,6 +690,7 @@ def make_handler(ledger: jobs.Ledger):
                 st = watch.state()
                 st.pop("mail_done", None)
                 return self._json({"config": watch.public(watch.load()), "state": st, "running": watching["running"],
+                                   "setting_up": setting_up["running"],
                                    "where": next(iter(current_profile()["locations"]), ""), "keywords": current_profile()["target_titles"][:5]})
             if path == "/api/places":
                 return self._json({"places": places.search(q.get("q", ""))})
@@ -673,6 +757,7 @@ def make_handler(ledger: jobs.Ledger):
                 state["profile"] = profile.save(data.get("profile") or {})
                 if data.get("rescore", True):
                     ledger.rescore_all(state["profile"])
+                maybe_autosetup()
                 return self._json({"profile": state["profile"], "counts": ledger.counts()})
             if path == "/api/profile/resume-file":
                 try:
@@ -746,6 +831,27 @@ def make_handler(ledger: jobs.Ledger):
                     raise BadRequest("Fill in the mail server, your address and an app password first.")
                 problem = mail.test_login(cfg)
                 return self._json({"ok": not problem, "error": problem})
+            if path == "/api/watch/setup":  # find employers near you and watch every confirmed board, in the background
+                return self._json({"started": maybe_autosetup(force=True)})
+            if path == "/api/watch/confirmed":  # watch every confirmed board on the employer list
+                near = watch.load().get("nearby") or {}
+                added = watch.watch_confirmed(near.get("items") or [])
+                if added:
+                    start_run()
+                return self._json({"config": watch.public(watch.load()), "added": added})
+            if path == "/api/alerts/test":
+                cfg = alerts.config()
+                try:
+                    alerts.send(cfg, "Job Scanner can reach your phone",
+                                "Strong matches and your morning brief will arrive here.", alerts.app_link(cfg), tags="white_check_mark")
+                except alerts.AlertError as e:
+                    return self._json({"ok": False, "error": str(e)})
+                return self._json({"ok": True})
+            if path == "/api/alerts/brief":  # send this morning's brief now
+                if not alerts.on(alerts.config()):
+                    raise BadRequest("Set an ntfy topic first.")
+                out = send_brief(datetime.now().astimezone())
+                return self._json({"ok": out in ("sent", "nothing"), "sent": out == "sent", "error": "" if out in ("sent", "nothing") else out})
             if path == "/api/watch/nearby":
                 p = current_profile()
                 if not p["locations"]:
@@ -770,6 +876,23 @@ def make_handler(ledger: jobs.Ledger):
                         changes[k] = data[k]
                 if "tour_done" in data:
                     changes["tour_done"] = bool(data["tour_done"])
+                if "phone_topic" in data:
+                    topic = str(data["phone_topic"] or "").strip()
+                    if topic and not alerts.valid_topic(topic):
+                        raise BadRequest("The ntfy topic must be 6 to 64 letters, digits, - or _.")
+                    changes["phone_topic"] = topic
+                for k in ("phone_server", "app_url"):
+                    if k in data:
+                        v = str(data[k] or "").strip().rstrip("/")
+                        if v and not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", v):
+                            raise BadRequest(f"{'The ntfy server' if k == 'phone_server' else 'The app address'} must start with https://")
+                        changes[k] = v
+                for k, lo, hi in (("phone_min", 0, 100), ("brief_hour", -1, 23)):
+                    if k in data:
+                        try:
+                            changes[k] = max(lo, min(hi, int(data[k])))
+                        except (TypeError, ValueError):
+                            raise BadRequest(f"{k} must be a number.") from None
                 if "model_auto" in data:
                     changes["model_auto"] = "light" if data["model_auto"] == "light" else "main"
                 if "start_with_windows" in data and startup.supported():
@@ -846,6 +969,8 @@ def make_handler(ledger: jobs.Ledger):
             return self._error("Not found", HTTPStatus.NOT_FOUND)
 
     Handler.read_new = staticmethod(read_new)
+    Handler.after_watch = staticmethod(after_watch)
+    Handler.housekeeping = staticmethod(housekeeping)
     Handler.current_profile = staticmethod(current_profile)
     return Handler
 
@@ -857,7 +982,7 @@ def serve(port: int = DEFAULT_PORT, host: str = "127.0.0.1", open_browser: bool 
     ledger = jobs.Ledger()
     handler = make_handler(ledger)
     httpd = ThreadingHTTPServer((host, port), handler)
-    watch.start(ledger, handler.current_profile, on_new=handler.read_new)
+    watch.start(ledger, handler.current_profile, on_new=handler.after_watch)
     url = f"http://127.0.0.1:{port}/"
     b = ai.describe_backend()
     where = url if is_loopback(host) else (f"port {port} of this machine's addresses" if host in ("0.0.0.0", "::")
@@ -872,6 +997,16 @@ def serve(port: int = DEFAULT_PORT, host: str = "127.0.0.1", open_browser: bool 
             except OSError as e:
                 print(f"Backup failed: {e}")
             threading.Event().wait(3600)
+
+    def chores():
+        threading.Event().wait(30)  # let the app finish starting
+        while True:
+            try:
+                handler.housekeeping()
+            except Exception as e:  # noqa: BLE001 - a bad round must never stop the next one
+                print(f"Housekeeping: {e}")
+            threading.Event().wait(300)
+    threading.Thread(target=chores, name="chores", daemon=True).start()
     threading.Thread(target=nightly, daemon=True).start()
     if open_browser:
         import webbrowser

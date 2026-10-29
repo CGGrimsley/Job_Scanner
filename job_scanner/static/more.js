@@ -33,7 +33,9 @@ function statusStrip() {
 
 /* ---------- home ---------- */
 async function showHome() {
-  const [{ todo }, ins] = await Promise.all([api("/api/todo"), api("/api/insights").catch(() => null)]);
+  const [{ todo }, ins, fr] = await Promise.all([api("/api/todo"), api("/api/insights").catch(() => null),
+    api("/api/jobs?fresh=1&status=untracked&limit=40").catch(() => ({ jobs: [] }))]);
+  const fresh = fr.jobs.filter((j) => j.best.verdict !== "Skip").slice(0, 6);
   const now = todo.filter((n) => n.urgency === "now");
   const w = ins && ins.week;
   const { steps, done } = setupState();
@@ -47,12 +49,16 @@ async function showHome() {
     ${statusStrip()}
     <div class="card next"><p class="note">Next step</p><h2><a href="${action.href}">${esc(action.label)} →</a></h2><p class="note">${esc(action.why)}</p>
       ${done < steps.length ? `<p class="note">Getting started: ${done} of ${steps.length} done. <a href="#" id="open-tour">Show the guide</a></p>` : ""}</div>
+    ${fresh.length ? `<div class="card fresh-card"><h2>Posted in the last day</h2><p class="note">Applying in the first day or two gives you the best odds. These are worth a look now.</p>
+      <ul class="clean">${fresh.map((j) => `<li><span class="score-chip ${j.best.verdict}">${j.best.score}</span> ${job(j)}</li>`).join("")}</ul>
+      <p class="note"><a href="#jobs" id="all-fresh">All fresh jobs →</a></p></div>` : ""}
     <div class="grid2">
       <div class="card"><h2>Needs you today</h2>${now.length ? `<ul class="clean">${now.slice(0, 6).map((n) => `<li><b>${esc(n.title)}</b>: <a href="#job/${encodeURIComponent(n.key)}">${esc(n.title_job || "?")}</a></li>`).join("")}</ul>`
         : `<p class="note">Nothing due. When you save or apply to jobs, follow-ups and thank-yous show up here on the right day.</p>`}</div>
       <div class="card"><h2>Best new matches</h2>${w && w.best_unapplied.length ? `<ul class="clean">${w.best_unapplied.map((j) => `<li><span class="score-chip ${j.verdict}">${j.score}</span> ${job(j)}</li>`).join("")}</ul>`
         : `<p class="note">None this week yet. Browse LinkedIn or Indeed with the extension on, or open a search from <a href="#discover">Discover</a>; strong matches land here.</p>`}</div>
     </div>`;
+  $("#all-fresh")?.addEventListener("click", () => { filters.fresh = "1"; });
   const t = $("#open-tour");
   if (t) t.addEventListener("click", (e) => { e.preventDefault(); tour.open(true); });
 }

@@ -16,6 +16,8 @@ Job Scanner reads the job postings you browse on LinkedIn, Indeed, NCWorks and c
 - **Interview prep** for any job: likely questions, what in your résumé answers each one (or that nothing does), and questions to ask them.
 - **Résumé check** on Insights: what application systems trip on (missing headings, dates, contact details, length) and the keywords your target jobs keep asking for that your résumés never mention.
 - **Home** shows your next setup step, what needs you today and the best new matches. A short guide walks new users through setup (Skip for now, or Don't show this again; it's on Setup if you want it back), and everything it asks for can be changed later.
+- **On your phone.** Strong matches the app finds by itself go to your phone through [ntfy](https://ntfy.sh) once Claude has read them, and a morning brief lists fresh jobs, new matches, follow-ups due and interviews coming up. See *Your phone* below.
+- **Fresh first.** Jobs posted today or yesterday are marked *Fresh*, lead Home and get 10 points of slack for phone alerts: applying in the first day or two matters most.
 - **The app** (http://127.0.0.1:8766) lists every job you've seen, best fit first. It also has an application tracker (saved, applied, interviewing, offer), cover letters, and a CSV export.
 
 It's passive. It only reads pages you open, as you scroll, and never clicks, applies or fetches anything by itself. Filling a form happens only when you click Fill this application, and you always submit it yourself. LinkedIn and Indeed forbid automated scraping in their terms, so on those sites it works the way you browse and nothing more. The app can also check some sources by itself, but only ones that publish their jobs for programs to read (see Watching).
@@ -101,7 +103,7 @@ On the Jobs page you can also filter by remote/hybrid/on-site, listed pay, years
 
 ## Watching (automatic sources)
 
-The **Watching** page sets up sources the app checks by itself, every few hours while it's running. Jobs worth a
+The **Watching** page sets up sources the app checks by itself, every hour while it's running. **It sets itself up:** once your Profile has places and target roles, the app finds the employers near you (below) and watches every job board it can confirm is theirs, then checks them straight away. It does this again when your places change (a failed attempt waits a day), and you can turn it off or rerun it with **Set it up for me**. Boards found only by guessing a name are never watched without you. Jobs worth a
 look are added to your Jobs list like the ones you browse. These are jobs with a quick score of 45 or more (adjustable)
 in one of your places, or remote if you take remote work. Strong matches get a desktop notification, and Claude reads
 the best few from each check (score 70 or more, at most 5) within your daily limit.
@@ -123,9 +125,16 @@ the best few from each check (score 70 or more, at most 5) within your daily lim
 Sites that don't allow programs are left out even when a feed exists. governmentjobs.com, which many cities, counties
 and states use, disallows every program but search engines in its robots.txt, so those employers stay as links.
 
+## Your phone
+
+On **Setup → Your phone**, paste an [ntfy](https://ntfy.sh) topic (free, no account: install the ntfy app on your phone and subscribe to the same topic; **Make one** picks a random name, and anyone who knows it can read your alerts). Then:
+
+- A job Watching finds reaches your phone once Claude has read it and rated it *Apply* at your threshold (70 by default; a job posted in the last day gets 10 points of slack). If Claude couldn't read it (off, or the day's limit is used up), only a quick score of 80+ is sent, and the alert says so. At most 5 per check, each job once. Tapping one opens the posting; set *This app's address* for an "In Job Scanner" button too.
+- The **morning brief** goes once a day at the hour you pick (local time; in Docker set `TZ` in `.env`): interviews today or tomorrow, to-dos due, jobs posted in the last day and new Apply matches since the last brief. Nothing is sent on a day with nothing to say.
+
 ## Your data
 
-Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved), `insights.json`, and `watch.json` / `watch_state.json` (what's watched and how each check went; API keys and the mail app password for Watching are kept there on your computer only, and are never sent back to the page). Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
+Everything stays on your computer in `~/.job_scanner` (change it with `JOB_SCANNER_DATA`). That folder holds `profile.json`, `jobs.json`, `settings.json`, `ai_usage.json`, `companies.json` (employer reads) `site_health.json`, `learned.json` (patterns you approved), `insights.json`, `alerts.json` (when the last brief and alert went), and `watch.json` / `watch_state.json` (what's watched and how each check went; API keys and the mail app password for Watching are kept there on your computer only, and are never sent back to the page). Each night the app copies them into `backups/YYYY-MM-DD/` there, keeping 14 days (`python -m job_scanner backup` does it now). Nothing personal is ever written into the repo.
 
 ## Credits
 
@@ -161,6 +170,7 @@ The code is laid out as follows:
 - `resume.py`: résumé import.
 - `advice.py`: the tracker's to-dos.
 - `facts.py`: years, degree and clearance read from postings.
+- `alerts.py`: phone alerts and the morning brief (ntfy).
 - `companies.py`: the one-per-employer read. `health.py`: whether each site is still readable. `startup.py`: Start with Windows.
 - `pdf.py`, `docx.py`: PDF and Word export.
 - `static/`: the web app.

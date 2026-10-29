@@ -153,3 +153,5 @@ details.more summary::-webkit-details-marker { display: none; }
 table.results { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
 table.results th, table.results td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
 @media (max-width: 700px) { table.results thead { display: none; } table.results tr { display: grid; padding: 8px 0; } table.results td { border: 0; padding: 2px 0; } }
+.tag.fresh { background: var(--apply-bg); color: var(--apply); font-weight: 600; }
+.fresh-card { border-left: 3px solid var(--apply); }
