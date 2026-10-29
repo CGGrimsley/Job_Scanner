@@ -54,19 +54,19 @@ async function route() {
 addEventListener("hashchange", route);
 
 /* ---------- jobs ---------- */
-const filters = { text: "", source: "", verdict: "", sort: "score", status: "", remote: "", min_pay: "", max_years: "", degree: "", clearance: "" };
-const FILTER_SELECTS = ["source", "verdict", "sort", "remote", "max_years", "degree", "clearance"];
+const filters = { text: "", source: "", verdict: "", fresh: "", sort: "score", status: "", remote: "", min_pay: "", max_years: "", degree: "", clearance: "" };
+const FILTER_SELECTS = ["source", "verdict", "fresh", "sort", "remote", "max_years", "degree", "clearance"];
 const factTags = (j) => (j.fact_tags || []).map((t) => `<span class="tag fact">${esc(t)}</span>`).join("");
 function jobRow(j) {
   const b = j.best, r = j.rules || {};
-  const why = j.ai ? j.ai.summary : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
+  const why = j.ai ? j.ai.summary : j.triage ? `First look (${j.triage.fit_score}): ${j.triage.why}` : [...(r.reasons || []).slice(0, 2), ...(r.cautions || []).slice(0, 2)].join(" · ");
   const pay = j.pay_text || (r.pay_max ? `up to ${money(r.pay_max)}` : "");
   return `<article class="job" data-key="${esc(j.key)}">
     <div class="score ${b.verdict}">${b.score}<small>${b.by === "ai" ? "✦ " : ""}${b.verdict}</small></div>
     <div><div class="t">${esc(j.title || "(untitled)")}</div>
       <div class="m">${esc([j.company, j.location, pay].filter(Boolean).join(" · "))}</div>
       <div class="why">${esc(why)}</div>
-      <div>${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
+      <div>${j.fresh ? `<span class="tag fresh" title="Posted today or yesterday: apply early">Fresh</span>` : ""}${j.overnight && !j.status ? `<span class="tag fresh" title="Résumé, cover letter and answers drafted overnight">Ready to review</span>` : ""}${warnTag(j.warnings)}${j.status ? `<span class="tag st">${esc(STATUS_LABEL[j.status])}</span>` : j.status_elsewhere ? `<span class="tag st">${esc(STATUS_LABEL[j.status_elsewhere.status])} on ${esc(j.status_elsewhere.where)}</span>` : ""}<span class="tag">${esc(j.source_name)}</span>${r.remote ? `<span class="tag">${esc(r.remote)}</span>` : ""}${factTags(j)}${(j.also_on || []).map((o) => `<span class="tag">${esc(o.source)}</span>`).join("")}${j.description ? "" : `<span class="tag">card only</span>`}${j.easy_apply ? `<span class="tag">Easy Apply</span>` : ""}</div>
     </div>
     <div class="side m">${esc((j.last_seen || "").slice(0, 10))}</div>
   </article>`;
@@ -109,6 +109,7 @@ async function showJobs() {
       <input type="search" id="q" placeholder="Search title, company, location" value="${esc(filters.text)}">
       <select id="source"><option value="">All sites</option>${sources}</select>
       <select id="verdict"><option value="">Any verdict</option><option>Apply</option><option>Consider</option><option>Skip</option></select>
+      <select id="fresh"><option value="">Posted any time</option><option value="1">Posted in the last day</option></select>
       <select id="sort"><option value="score">Best fit</option><option value="newest">Newest</option><option value="pay">Highest pay</option><option value="years">Fewest years asked</option></select>
       <a class="btn small" href="/api/jobs.csv">Export CSV</a>
     </div>
@@ -485,6 +486,7 @@ function showProfile() {
       <div class="grid2">
         <div class="card"><h2>2. What you're looking for</h2>
           <label class="f">Job titles you want <small>Suggested from your résumés; add your own, one per line</small><textarea name="target_titles" style="min-height:90px">${esc(p.target_titles.join("\n"))}</textarea></label>
+          <label class="f">Other titles that count <small>The same jobs under other names, so a good posting isn't missed. Claude suggests these when your titles change; delete any that aren't right and they won't come back.</small><textarea name="title_aliases" style="min-height:60px">${esc((p.title_aliases || []).join("\n"))}</textarea></label>
           <label class="f">Your skills <small>Comma or line separated: tools, certifications, specialties</small><textarea name="skills" style="min-height:90px">${esc(p.skills.join(", "))}</textarea></label>
           <div class="f"><label for="place-q">Locations</label> <small class="note">Start typing a city or state and pick it. A state covers every job in it.</small>
             <div class="chips" id="places"></div>
@@ -522,7 +524,7 @@ function showProfile() {
     const out = {};
     for (const k of ["name", "about_me", "dealbreakers", "min_salary", "years_experience"]) out[k] = fd.get(k);
     out.resumes = resumes();
-    for (const k of ["target_titles", "skills", "avoid_keywords"]) out[k] = fd.get(k);
+    for (const k of ["target_titles", "title_aliases", "skills", "avoid_keywords"]) out[k] = fd.get(k);
     out.locations = chosenPlaces;
     for (const k of ["remote", "job_types", "seniority"]) out[k] = fd.getAll(k);
     out.max_age_days = S.profile.max_age_days;
@@ -687,9 +689,11 @@ async function showWatch() {
       <td>${wb ? (watched ? `<span class="tag st">Watching</span>` : `<button class="btn small" data-near="${i}">Watch</button>`) : ""}</td></tr>`;
   };
   view.innerHTML = `<h1>Watching</h1>
-    <p class="lede">Sources Job Scanner checks by itself every ${c.every_hours} hours while it's running. Jobs worth a look (quick score ${c.min_score}+, in your places) are added to your Jobs list like the ones you browse, and strong matches get a notification. LinkedIn and Indeed are never loaded automatically: their terms forbid it, so they come in through your alert emails below.</p>
+    <p class="lede">Sources Job Scanner checks by itself every ${c.every_hours === 1 ? "hour" : c.every_hours + " hours"} while it's running. Jobs worth a look (quick score ${c.min_score}+, in your places) are added to your Jobs list like the ones you browse, and strong matches get a notification. LinkedIn and Indeed are never loaded automatically: their terms forbid it, so they come in through your alert emails below.</p>
     <div class="actions" style="margin:0 0 14px"><button class="btn primary" id="run-now" ${w.running ? "disabled" : ""}>${w.running ? "Checking…" : "Check everything now"}</button>
       <span class="note" style="align-self:center">Last checked: ${esc(when(st.last_run))}</span></div>
+
+    ${setupCard(w, near)}
 
     <div class="card"><h2>Employers near you</h2>
       <p class="note">Claude lists the prominent employers around ${esc((near && near.places || []).join("; ") || w.where || "your places")} that hire for the roles you want, and where each one posts its jobs. The list comes from Claude's general knowledge, so it can be out of date. Every link and board is checked from this computer before it's shown as watchable.</p>
@@ -747,6 +751,23 @@ async function showWatch() {
       if (!now.running) { clearInterval(poll); toast("Checked."); if (location.hash === "#watch") showWatch(); }
     }, 3000);
   });
+  $("#auto-setup")?.addEventListener("click", async (e) => {
+    busy(e.target, "Finding employers near you and checking each board (a minute or two)…");
+    try {
+      await api("/api/watch/setup", {});
+      const poll = setInterval(async () => {
+        const now = await api("/api/watch");
+        if (!now.setting_up) { clearInterval(poll); if (location.hash === "#watch") showWatch(); }
+      }, 3000);
+    } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Set it up for me"; }
+  });
+  $("#watch-confirmed")?.addEventListener("click", async () => {
+    try { const out = await api("/api/watch/confirmed", {}); toast(out.added.length ? `Watching ${out.added.length} more employers.` : "Already watching them all."); await showWatch(); }
+    catch (err) { toast(err.message); }
+  });
+  $("#auto-boards")?.addEventListener("change", async (e) => {
+    try { await api("/api/watch", { auto_boards: e.target.checked }); toast("Saved."); } catch (err) { toast(err.message); }
+  });
   $("#find-near").addEventListener("click", async (e) => {
     busy(e.target, "Claude is listing employers, then each one is checked (a minute or two)…");
     try { await api("/api/watch/nearby", {}); await showWatch(); } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Find employers near me"; }
@@ -785,9 +806,62 @@ async function showWatch() {
     } catch (err) { note.textContent = err.message; }
   });
 }
+function setupCard(w, near) {
+  const c = w.config, done = (w.state || {}).autosetup;
+  const confirmed = (near && near.items || []).filter((e) => e.watchable && !e.watchable.guessed);
+  const unwatched = confirmed.filter((e) => !c.boards.some((b) => b.provider === e.watchable.provider && b.token.toLowerCase() === e.watchable.token.toLowerCase()));
+  const mailOff = !c.email.enabled;
+  return `<div class="card next"><h2>Set up for you</h2>
+    <p class="note">Job Scanner finds the prominent employers near your places, watches every job board it can confirm is theirs, and checks them every hour. It does this by itself when your places change (or once a day until it works). Boards it could only guess at are left for you to check.</p>
+    ${w.setting_up ? `<p><span class="spinner"></span>Setting up now: finding employers and checking each board…</p>` : done ? `<p>Last set up ${esc((done.at || "").slice(0, 10))}: ${done.employers} employers found, ${done.watched.length} boards watched${done.watched.length ? ` (${esc(done.watched.slice(0, 6).join(", "))}${done.watched.length > 6 ? "…" : ""})` : ""}.</p>` : ""}
+    <div class="actions"><button class="btn primary" id="auto-setup" ${w.setting_up || !S.ai.backend ? "disabled" : ""}>${done ? "Set it up again" : "Set it up for me"}</button>
+      ${unwatched.length ? `<button class="btn" id="watch-confirmed">Watch the ${unwatched.length} confirmed board${unwatched.length > 1 ? "s" : ""} below</button>` : ""}</div>
+    <label class="f"><input type="checkbox" id="auto-boards" ${c.auto_boards ? "checked" : ""}> Keep this set up by itself when my places change</label>
+    ${mailOff ? `<p class="note"><b>One thing only you can do:</b> LinkedIn and Indeed jobs come in through their alert emails. Set up alerts there, then fill in <b>Job alert emails</b> below with an app password.</p>` : ""}
+  </div>`;
+}
 function boardLink(b) {
   return { greenhouse: `https://job-boards.greenhouse.io/${b.token}`, lever: `https://jobs.lever.co/${b.token}`,
     ashby: `https://jobs.ashbyhq.com/${b.token}`, smartrecruiters: `https://careers.smartrecruiters.com/${b.token}` }[b.provider];
+}
+
+/* ---------- your phone (ntfy) ---------- */
+function phoneCard(s) {
+  const hours = [[-1, "No morning brief"], ...Array.from({ length: 24 }, (_, h) => [h, `${String(h).padStart(2, "0")}:00`])];
+  return `<div class="card"><h2>Your phone</h2>
+    <p class="note">Job Scanner sends strong matches it finds by itself to your phone, once Claude has read them, and a short brief each morning: fresh jobs, applications drafted overnight, new matches, follow-ups due and interviews coming up. It uses <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a>, which is free with no account. Install the ntfy app, subscribe to a topic name only you know, and paste it here. Anyone who knows the name can read the alerts, so keep it long and random.</p>
+    <div class="grid2">
+      <label class="f">ntfy topic <span class="token"><input id="ph-topic" value="${esc(s.phone_topic)}" placeholder="e.g. jobs-k3v9q2x7m1" autocomplete="off"><button class="btn small" id="ph-make" type="button">Make one</button></span></label>
+      <label class="f">Send a job when Claude rates it Apply at least <small>Jobs posted in the last day get 10 points of slack. Without Claude's read, only a quick score of 80+ is sent.</small><input type="number" id="ph-min" min="0" max="100" value="${s.phone_min}"></label>
+      <label class="f">Morning brief at <small>This server's local time</small><select id="ph-brief">${hours.map(([v, l]) => `<option value="${v}" ${+s.brief_hour === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="f">Draft applications overnight <small>For the best new Apply jobs: tailored résumé, cover letter and likely answers, ready in the morning. Each one uses about 4 Claude calls of your daily limit.</small><select id="ph-drafts">${[0, 1, 2, 3, 5].map((n) => `<option value="${n}" ${+s.drafts_per_night === n ? "selected" : ""}>${n ? `Up to ${n} a night` : "Don't draft overnight"}</option>`).join("")}</select></label>
+      <label class="f">Remind me the evening before an interview at <select id="ph-evening">${hours.map(([v, l]) => `<option value="${v}" ${+s.evening_hour === v ? "selected" : ""}>${v < 0 ? "No reminder" : l}</option>`).join("")}</select></label>
+      <label class="f">This app's address <small>For the "In Job Scanner" button on alerts, e.g. https://jobs.example.com</small><input id="ph-app" value="${esc(s.app_url)}" placeholder="${esc(location.origin)}"></label>
+    </div>
+    <details><summary>Your own ntfy server</summary><label class="f">ntfy server <input id="ph-server" value="${esc(s.phone_server)}" placeholder="https://ntfy.sh"></label></details>
+    <div class="actions"><button class="btn primary" id="ph-save">Save</button><button class="btn" id="ph-test">Send a test</button><button class="btn" id="ph-brief-now">Send this morning's brief now</button><span class="note" id="ph-out" style="align-self:center"></span></div>
+  </div>`;
+}
+function bindPhone() {
+  const out = $("#ph-out");
+  $("#ph-make").addEventListener("click", () => {
+    const a = new Uint8Array(9); crypto.getRandomValues(a);
+    $("#ph-topic").value = "jobs-" + Array.from(a, (b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+  });
+  const save = async () => {
+    const outS = await api("/api/settings", { phone_topic: $("#ph-topic").value, phone_min: $("#ph-min").value, brief_hour: $("#ph-brief").value,
+      app_url: $("#ph-app").value, phone_server: $("#ph-server").value, drafts_per_night: $("#ph-drafts").value, evening_hour: $("#ph-evening").value });
+    S.settings = outS.settings;
+  };
+  $("#ph-save").addEventListener("click", async () => { try { await save(); toast("Saved."); } catch (err) { toast(err.message); } });
+  $("#ph-test").addEventListener("click", async () => {
+    try { await save(); const r = await api("/api/alerts/test", {}); out.textContent = r.ok ? "Sent. Check your phone." : r.error; }
+    catch (err) { out.textContent = err.message; }
+  });
+  $("#ph-brief-now").addEventListener("click", async () => {
+    try { await save(); const r = await api("/api/alerts/brief", {}); out.textContent = r.sent ? "Sent." : r.ok ? "Nothing to report right now, so nothing was sent." : r.error; }
+    catch (err) { out.textContent = err.message; }
+  });
 }
 
 /* ---------- setup ---------- */
@@ -851,6 +925,7 @@ async function showSetup() {
         <button class="btn small" id="rotate">Make a new token</button></details>
       </div>
     </div>
+    ${phoneCard(s)}
     <div class="card"><h2>Getting started guide</h2><p class="note">The step-by-step guide from your first visit. Everything in it can be changed any time.</p><button class="btn" id="guide-again">Show the guide</button></div>
     <div class="card"><h2>Your data is backed up</h2><p class="note">Every day the app copies your data to a <code>backups</code> folder inside your data folder (the last 14 days are kept).</p><button class="btn small" id="backup-now">Back up now</button> <span class="note" id="backup-out"></span></div>
     <div class="card"><h2>Can the extension read each site?</h2>${healthList()}</div>
@@ -859,6 +934,7 @@ async function showSetup() {
       <div class="actions"><a class="btn" href="/api/jobs.csv">Export CSV</a><button class="btn" id="rescore">Rescore all jobs</button><button class="btn danger" id="clear">Clear jobs I'm not tracking</button></div>
     </div>`;
   $("#guide-again").addEventListener("click", () => tour.open(true));
+  bindPhone();
   $("#backup-now").addEventListener("click", async () => {
     const out = await api("/api/backup", {}).catch((e) => ({ error: e.message }));
     $("#backup-out").textContent = out.error || (out.backup ? `Saved to ${out.backup}` : `Today's backup is already in ${out.folder}`);

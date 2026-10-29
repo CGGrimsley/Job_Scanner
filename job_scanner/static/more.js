@@ -33,7 +33,10 @@ function statusStrip() {
 
 /* ---------- home ---------- */
 async function showHome() {
-  const [{ todo }, ins] = await Promise.all([api("/api/todo"), api("/api/insights").catch(() => null)]);
+  const [{ todo }, ins, fr] = await Promise.all([api("/api/todo"), api("/api/insights").catch(() => null),
+    api("/api/jobs?fresh=1&status=untracked&limit=40").catch(() => ({ jobs: [] }))]);
+  const ready = (await api("/api/jobs?drafted=1&status=untracked&limit=6").catch(() => ({ jobs: [] }))).jobs;
+  const fresh = fr.jobs.filter((j) => j.best.verdict !== "Skip").slice(0, 6);
   const now = todo.filter((n) => n.urgency === "now");
   const w = ins && ins.week;
   const { steps, done } = setupState();
@@ -47,12 +50,18 @@ async function showHome() {
     ${statusStrip()}
     <div class="card next"><p class="note">Next step</p><h2><a href="${action.href}">${esc(action.label)} →</a></h2><p class="note">${esc(action.why)}</p>
       ${done < steps.length ? `<p class="note">Getting started: ${done} of ${steps.length} done. <a href="#" id="open-tour">Show the guide</a></p>` : ""}</div>
+    ${ready.length ? `<div class="card fresh-card"><h2>Ready to review</h2><p class="note">Drafted overnight for your best new matches: a tailored résumé, a cover letter and likely answers. Read them, fix anything that's off, and apply.</p>
+      <ul class="clean">${ready.map((j) => `<li><span class="score-chip ${j.best.verdict}">${j.best.score}</span> ${job(j)}</li>`).join("")}</ul></div>` : ""}
+    ${fresh.length ? `<div class="card fresh-card"><h2>Posted in the last day</h2><p class="note">Applying in the first day or two gives you the best odds. These are worth a look now.</p>
+      <ul class="clean">${fresh.map((j) => `<li><span class="score-chip ${j.best.verdict}">${j.best.score}</span> ${job(j)}</li>`).join("")}</ul>
+      <p class="note"><a href="#jobs" id="all-fresh">All fresh jobs →</a></p></div>` : ""}
     <div class="grid2">
       <div class="card"><h2>Needs you today</h2>${now.length ? `<ul class="clean">${now.slice(0, 6).map((n) => `<li><b>${esc(n.title)}</b>: <a href="#job/${encodeURIComponent(n.key)}">${esc(n.title_job || "?")}</a></li>`).join("")}</ul>`
         : `<p class="note">Nothing due. When you save or apply to jobs, follow-ups and thank-yous show up here on the right day.</p>`}</div>
       <div class="card"><h2>Best new matches</h2>${w && w.best_unapplied.length ? `<ul class="clean">${w.best_unapplied.map((j) => `<li><span class="score-chip ${j.verdict}">${j.score}</span> ${job(j)}</li>`).join("")}</ul>`
         : `<p class="note">None this week yet. Browse LinkedIn or Indeed with the extension on, or open a search from <a href="#discover">Discover</a>; strong matches land here.</p>`}</div>
     </div>`;
+  $("#all-fresh")?.addEventListener("click", () => { filters.fresh = "1"; });
   const t = $("#open-tour");
   if (t) t.addEventListener("click", (e) => { e.preventDefault(); tour.open(true); });
 }
@@ -69,10 +78,11 @@ function rolesHtml(roles) {
     <p class="note">Suggested ${esc((roles.at || "").slice(0, 10))}. Add any you like to your target roles on your Profile so they're scored as wanted.</p>`;
 }
 function learnedHtml(d) {
-  const sug = d.suggestions.map((s) => `<li data-id="${esc(s.id)}" data-label="${esc(s.label)}">You've passed on <b>${esc(s.label)}</b> ${s.passed} times${s.kept ? ` (kept ${s.kept})` : ""}. Score them lower?
+  const sug = d.suggestions.map((s) => s.up ? `<li data-id="${esc(s.id)}" data-label="${esc(s.label)}">You keep going for <b>${esc(s.label)}</b> (${s.kept}, counting interviews twice${s.passed ? `; passed ${s.passed}` : ""}). Score them higher?
+    <button class="btn small" data-act="yes">Yes</button> <button class="btn small" data-act="no">No, leave them</button></li>` : `<li data-id="${esc(s.id)}" data-label="${esc(s.label)}">You've passed on <b>${esc(s.label)}</b> ${s.passed} times${s.kept ? ` (kept ${s.kept})` : ""}. Score them lower?
     <button class="btn small" data-act="yes">Yes</button> <button class="btn small" data-act="no">No, keep them</button></li>`).join("");
-  const rules = d.learned.map((r) => `<li data-id="${esc(r.kind + ":" + r.value)}">Scoring lower: ${esc(r.label)} <button class="btn small" data-act="forget">Undo</button></li>`).join("");
-  return (sug || rules) ? `<ul class="clean learn">${sug}${rules}</ul>` : `<p class="note">When you mark jobs Dismissed, patterns you keep passing on (an employer, a word in the title, staffing agencies, on-site work) show up here as suggestions. Nothing changes unless you say yes.</p>`;
+  const rules = d.learned.map((r) => `<li data-id="${esc((r.up ? "up:" : "") + r.kind + ":" + r.value)}">Scoring ${r.up ? "higher" : "lower"}: ${esc(r.label)} <button class="btn small" data-act="forget">Undo</button></li>`).join("");
+  return (sug || rules) ? `<ul class="clean learn">${sug}${rules}</ul>` : `<p class="note">When you mark jobs Dismissed, patterns you keep passing on (an employer, a word in the title, staffing agencies, on-site work) show up here as suggestions. So do the ones you keep saving and applying to. Nothing changes unless you say yes.</p>`;
 }
 async function showDiscover() {
   const d = await api("/api/discover");
@@ -105,7 +115,7 @@ function bindLearned() {
     try {
       const out = await api("/api/learn", body);
       $("#learned").innerHTML = learnedHtml(out);
-      toast(act === "yes" ? "Done: those jobs now score lower, with a note saying why." : act === "forget" ? "Undone." : "Got it, they'll be left alone.");
+      toast(act === "yes" ? (li.dataset.id.startsWith("up:") ? "Done: those jobs now score higher, with a note saying why." : "Done: those jobs now score lower, with a note saying why.") : act === "forget" ? "Undone." : "Got it, they'll be left alone.");
     } catch (err) { toast(err.message); }
   });
 }

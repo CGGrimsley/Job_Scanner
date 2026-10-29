@@ -212,6 +212,22 @@ class Ledger:
             self.save()
             return rec
 
+    def set_triage(self, looks: dict) -> None:
+        """Claude's first look at postings ({key: {fit_score, verdict, why}}), used to pick which get a full read."""
+        with _lock:
+            for k, v in looks.items():
+                if k in self.jobs:
+                    self.jobs[k]["triage"] = {**v, "at": now_iso()}
+            self.save()
+
+    def mark_pushed(self, keys: list) -> None:
+        """Remember which jobs reached the phone, so each is sent once."""
+        with _lock:
+            for k in keys:
+                if k in self.jobs:
+                    self.jobs[k]["pushed"] = now_iso()
+            self.save()
+
     def delete(self, key: str) -> None:
         with _lock:
             self.jobs.pop(key, None)
@@ -265,6 +281,10 @@ class Ledger:
             recs = [r for r in recs if r.get("status") != "dismissed"]
         if q.get("verdict"):
             recs = [r for r in recs if best(r)["verdict"] == q["verdict"]]
+        if q.get("fresh"):
+            recs = [r for r in recs if fresh(r)]
+        if q.get("drafted"):
+            recs = [r for r in recs if r.get("overnight")]
         if q.get("text"):
             t = q["text"].lower()
             recs = [r for r in recs if t in " ".join(str(r.get(k) or "") for k in ("title", "company", "location")).lower()]
@@ -369,6 +389,21 @@ def note_posted(rec: dict, today=None) -> None:
         rec["posted_on"] = posted
 
 
+FRESH_DAYS = 1  # posted today or yesterday
+
+
+def fresh(rec: dict, today=None) -> bool:
+    """Posted today or yesterday (by the posting date the site gave), and still open: the jobs worth applying to
+    first. Read from posted_on, so it goes stale on its own as days pass."""
+    if rec.get("closed") or not rec.get("posted_on"):
+        return False
+    today = today or datetime.now(timezone.utc).date()
+    try:
+        return (today - date.fromisoformat(rec["posted_on"])).days <= FRESH_DAYS
+    except ValueError:
+        return False
+
+
 def merge(rec: dict, row: dict) -> None:
     """Fold a newly captured row into its record. A full posting's fields win over a card's; a card never wipes
     out a description that was captured from the posting itself."""
@@ -451,7 +486,7 @@ def mark_for(rec: dict, profile: dict | None = None, siblings: list | None = Non
     why = ai.get("summary") or "; ".join((r.get("reasons") or [])[:3] + (r.get("cautions") or [])[:2])
     return {"source": rec["source"], "id": rec["id"], "key": rec["key"], "score": b["score"], "verdict": b["verdict"],
             "by": b["by"], "why": why, "status": status, "status_via": via, "analyzed": bool(ai),
-            "has_description": bool(rec.get("description")), "facts": facts.labels(rec.get("facts") or {}),
+            "has_description": bool(rec.get("description")), "fresh": fresh(rec), "facts": facts.labels(rec.get("facts") or {}),
             "warnings": [w for w in warn if w["level"] in ("scam", "ghost")][:3]}
 
 
@@ -459,6 +494,7 @@ def public(rec: dict, siblings: list | None = None) -> dict:
     out = dict(rec)
     out["best"] = best(rec)
     out["source_name"] = SOURCES.get(rec["source"], rec["source"])
+    out["fresh"] = fresh(rec)
     out["fact_tags"] = facts.labels(rec.get("facts") or {})
     out["warnings"] = signals.warnings(rec, siblings)
     out["also_on"] = [{"key": o["key"], "source": SOURCES.get(o["source"], o["source"]), "url": o.get("url") or "",

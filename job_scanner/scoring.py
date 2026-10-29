@@ -172,7 +172,7 @@ def score(job: dict, profile: dict, now: datetime | None = None) -> dict:
     no_prefs = not (profile.get("target_titles") or profile.get("skills"))
 
     # title (35)
-    tm = _title_match(title, profile.get("target_titles") or [])
+    tm = _title_match(title, (profile.get("target_titles") or []) + (profile.get("title_aliases") or []))
     pts += 35 * tm
     if tm >= 0.99:
         reasons.append("Title matches what you're after")

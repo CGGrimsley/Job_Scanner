@@ -18,13 +18,14 @@ from . import feeds, jobs, mail, scoring, store
 
 FILE, STATE = "watch.json", "watch_state.json"
 DEFAULT = {
-    "every_hours": 4, "min_score": 45, "boards": [],
+    "every_hours": 1, "min_score": 45, "boards": [],
     "searches": {"keywords": [], "where": "", "radius_miles": 25},
     "usajobs": {"enabled": False, "email": "", "key": ""},
     "adzuna": {"enabled": False, "app_id": "", "app_key": ""},
     "email": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "", "password": "", "folder": "INBOX"},
-    "nearby": None,
+    "nearby": None, "auto_boards": True,
 }
+AUTO_RETRY_HOURS = 24  # a failed or empty set-up is tried again after this long
 SECRETS = (("usajobs", "key"), ("adzuna", "app_key"), ("email", "password"))
 _lock = threading.Lock()
 _running = threading.Lock()
@@ -75,8 +76,59 @@ def save(changes: dict) -> dict:
                 cfg[section][k] = v
         if "nearby" in changes:
             cfg["nearby"] = changes["nearby"]
+        if "auto_boards" in changes:
+            cfg["auto_boards"] = bool(changes["auto_boards"])
         store.write_json(FILE, cfg)
         return cfg
+
+
+def autosetup_due(cfg: dict, profile: dict, st: dict, now: datetime | None = None) -> bool:
+    """Set Watching up by itself when it's allowed to (auto_boards), the profile has places and roles, and the
+    employer list is missing or was made for other places. Tried at most once a day."""
+    places = profile.get("locations") or []
+    if not cfg.get("auto_boards") or not places or not profile.get("target_titles"):
+        return False
+    near = cfg.get("nearby") or {}
+    if near and near.get("places") == places:
+        return False
+    last = st.get("autosetup_at")
+    now = now or datetime.now(timezone.utc)
+    return not last or now - datetime.fromisoformat(last) >= timedelta(hours=AUTO_RETRY_HOURS)
+
+
+def watch_confirmed(items: list) -> list:
+    """Watch every employer board that was confirmed (never one found only by guessing a name). Returns the names added."""
+    added = []
+    with _lock:
+        cfg = load()
+        have = {(b["provider"], b["token"].lower()) for b in cfg["boards"]}
+        for e in items:
+            wb = e.get("watchable")
+            if not wb or wb.get("guessed") or wb["provider"] not in feeds.BOARDS or (wb["provider"], wb["token"].lower()) in have:
+                continue
+            cfg["boards"].append({"provider": wb["provider"], "token": wb["token"], "name": e.get("name") or wb["token"],
+                                  "added": jobs.now_iso(), "auto": True})
+            have.add((wb["provider"], wb["token"].lower()))
+            added.append(e.get("name") or wb["token"])
+        if added:
+            store.write_json(FILE, cfg)
+    return added
+
+
+def autosetup(profile: dict, find) -> dict:
+    """Find the employers near the profile's places (`find` is nearby.find) and watch every confirmed board.
+    Records the attempt in watch_state.json whatever happens, so a failure waits a day before trying again."""
+    st = state()
+    st["autosetup_at"] = jobs.now_iso()
+    store.write_json(STATE, st)
+    places = profile.get("locations") or []
+    items = find(places, profile.get("target_titles") or [], profile.get("skills") or [])
+    save({"nearby": {"at": jobs.now_iso(), "places": places, "items": items}})
+    added = watch_confirmed(items)
+    st = state()
+    st["autosetup"] = {"at": jobs.now_iso(), "employers": len(items), "watched": added}
+    store.write_json(STATE, st)
+    return st["autosetup"]
 
 
 def add_board(provider: str, token: str, name: str = "") -> dict:
