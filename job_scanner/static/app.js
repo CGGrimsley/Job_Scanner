@@ -723,8 +723,12 @@ async function showWatch() {
         <p class="note">Free key from <a href="https://developer.usajobs.gov/apirequest/" target="_blank" rel="noopener">developer.usajobs.gov</a>; it's tied to the email you register with.</p>
         <label class="f"><input type="checkbox" id="us-on" ${c.usajobs.enabled ? "checked" : ""}> Search USAJobs</label>
         <label class="f">Registered email <input id="us-email" value="${esc(c.usajobs.email)}"></label>
-        <label class="f">API key <small>${c.usajobs.key_set ? "Saved. Leave blank to keep it." : ""}</small><input id="us-key" type="password" autocomplete="off"></label>
+        <label class="f">API key <small>${c.usajobs.key_set ? "Saved. Leave blank to keep it." : c.usajobs.key_from_env ? "Using the key in this server's settings (.env). Paste one here only to use a different key." : ""}</small><input id="us-key" type="password" autocomplete="off"></label>
         <p>${runLine("usajobs")}</p></div>
+      <div class="card"><h2>JOBS.NOW</h2>
+        <p class="note"><a href="https://www.jobs.now" target="_blank" rel="noopener">JOBS.NOW</a> collects jobs employers advertise for US citizens, many of them ads that must run while a company sponsors someone's green card (some already have a person in mind, and each one says so). Job Scanner reads its public list of jobs and the job pages whose titles match your target roles, at one page a second as the site asks, up to 30 a check.</p>
+        <label class="f"><input type="checkbox" id="jn-on" ${c.jobsnow.enabled ? "checked" : ""}> Check JOBS.NOW</label>
+        <p>${runLine("jobsnow")}</p></div>
       <div class="card"><h2>Adzuna (many job boards)</h2>
         <p class="note">Free key from <a href="https://developer.adzuna.com/" target="_blank" rel="noopener">developer.adzuna.com</a>. Adzuna only gives a short preview, so these come in as cards: open one and the extension reads the full posting.</p>
         <label class="f"><input type="checkbox" id="az-on" ${c.adzuna.enabled ? "checked" : ""}> Search Adzuna</label>
@@ -793,6 +797,7 @@ async function showWatch() {
     email: { enabled: $("#em-on").checked, host: $("#em-host").value, folder: $("#em-folder").value, user: $("#em-user").value, password: $("#em-pass").value },
     usajobs: { enabled: $("#us-on").checked, email: $("#us-email").value, key: $("#us-key").value },
     adzuna: { enabled: $("#az-on").checked, app_id: $("#az-id").value, app_key: $("#az-key").value },
+    jobsnow: { enabled: $("#jn-on").checked },
   });
   $("#save-watch").addEventListener("click", async () => {
     try { await api("/api/watch", settingsBody()); toast("Saved."); await showWatch(); } catch (err) { toast(err.message); }

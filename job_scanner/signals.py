@@ -96,6 +96,10 @@ def warnings(rec: dict, group: list | None = None) -> list:
                     "text": f"No pay listed, though most employers must post a range for jobs in {name}. Worth asking about"})
     if rec.get("opened") and desc and len(desc) < 500:
         out.append({"code": "thin", "level": "caution", "text": "Very little detail about the role or its requirements"})
+    if rec.get("source") == "jobsnow":
+        out.append({"code": "perm_ad", "level": "caution",
+                    "text": "Many JOBS.NOW listings are ads employers must run while sponsoring someone's green card. Some "
+                            "already have a person in mind, so your odds can be lower than the posting suggests"})
     if re.search(STAFFING, text):
         out.append({"code": "agency", "level": "info", "text": "Posted by a recruiter or staffing agency for an unnamed client"})
     if rec.get("applicants") and rec["applicants"] >= 500:
