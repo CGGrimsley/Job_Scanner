@@ -125,7 +125,13 @@ matches go to your phone (see *Your phone*) and to Chrome.
   app password. Outlook.com and Hotmail don't allow this kind of sign-in. The app itself never loads LinkedIn or
   Indeed.
 - **USAJobs** and **Adzuna**, with free keys from their developer sites. Searches use your target roles and first
-  place unless you set your own.
+  place unless you set your own. On a server, a USAJobs key already in the environment (`JOB_SCANNER_USAJOBS_KEY` and
+  `JOB_SCANNER_USAJOBS_EMAIL`, or `USAJOBS_API_KEY` and `USAJOBS_EMAIL`) is used without pasting it in, and turns
+  USAJobs on unless you turn it off on Watching.
+- **JOBS.NOW** (off until you tick it). The app reads the job list its sitemap publishes and opens only the postings
+  whose titles match your target roles, one a second as its robots.txt asks, at most 30 per check, never the same one
+  twice. Many of its listings are ads employers must run while sponsoring someone's green card, so each one carries
+  that caution.
 
 Sites that don't allow programs are left out even when a feed exists. governmentjobs.com, which many cities, counties
 and states use, disallows every program but search engines in its robots.txt, so those employers stay as links.

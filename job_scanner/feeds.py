@@ -1,5 +1,7 @@
 """Job feeds that are meant to be read by programs: employers' public job boards on Greenhouse, Lever, Ashby and
-SmartRecruiters, the USAJobs search API and the Adzuna search API.
+SmartRecruiters, the USAJobs search API and the Adzuna search API, and JOBS.NOW through its sitemap and the
+schema.org JobPosting data on each job page (its robots.txt allows both, at one request a second; it disallows
+only its RSS feed, which isn't used).
 
 Nothing here loads LinkedIn or Indeed. Their terms forbid automated access, so their jobs come in only through pages
 the person browses (the extension) or the alert emails those sites send them (mail.py).
@@ -42,6 +44,18 @@ def get_json(url: str, headers: dict | None = None):
         raise FeedError(f"Couldn't reach {host}: {getattr(e, 'reason', e)}") from None
     except ValueError:
         raise FeedError(f"{host} didn't send JSON") from None
+
+
+def get_text(url: str, accept: str = "text/html,application/xml") -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": accept})
+    host = urllib.parse.urlparse(url).netloc
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return r.read(3_000_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise FeedError(f"{host} answered {e.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise FeedError(f"Couldn't reach {host}: {getattr(e, 'reason', e)}") from None
 
 
 class _Text(HTMLParser):
@@ -234,4 +248,96 @@ def adzuna(app_id: str, app_key: str, keyword: str, where: str = "", radius: int
                      "job_type": {"full_time": "Full-time", "part_time": "Part-time"}.get(j.get("contract_time"), ""),
                      "pay_min": int(j["salary_min"]) if real_pay else None, "pay_max": int(j.get("salary_max") or j["salary_min"]) if real_pay else None,
                      "_snippet": html_text(j.get("description"))})
+    return rows
+
+
+# --- JOBS.NOW ---------------------------------------------------------------------------------------------------
+JOBSNOW = "https://www.jobs.now"
+JOBSNOW_DELAY = 1.0  # robots.txt asks for one request a second
+JOBSNOW_PER_RUN = 30  # job pages read per check, at most; the rest wait for the next check
+_JOBSNOW_URL = re.compile(r"^https://www\.jobs\.now/jobs/(\d{5,})-([a-z0-9-]+)$")
+
+
+def jobsnow_listing(get=None) -> list:
+    """Every job JOBS.NOW lists, from its sitemap: [{"id", "url", "slug_title", "lastmod"}]."""
+    get = get or get_text
+    index = get(JOBSNOW + "/sitemap.xml")
+    maps = [m for m in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", index) if re.search(r"/sitemap-jobs-\d+\.xml$", m)]
+    out, seen = [], set()
+    for sm in maps[:20]:
+        xml = get(sm)
+        for block in re.findall(r"<url>(.*?)</url>", xml, re.S):
+            loc = re.search(r"<loc>\s*([^<\s]+)\s*</loc>", block)
+            m = _JOBSNOW_URL.match(loc.group(1)) if loc else None
+            if not m or m.group(1) in seen:
+                continue
+            seen.add(m.group(1))
+            words = re.sub(r"-ref-[a-z0-9-]+$", "", m.group(2)).replace("-", " ")
+            mod = re.search(r"<lastmod>\s*([^<\s]+)", block)
+            out.append({"id": m.group(1), "url": loc.group(1), "slug_title": words, "lastmod": mod.group(1) if mod else ""})
+    return out
+
+
+def jobsnow_posting(page: str, url: str, jid: str) -> dict | None:
+    """A row from a JOBS.NOW job page's schema.org JobPosting data."""
+    for raw in re.findall(r'<script type="application/ld\+json">(.*?)</script>', page, re.S):
+        try:
+            data = json.loads(raw.strip())
+        except ValueError:
+            continue
+        if not isinstance(data, dict) or data.get("@type") != "JobPosting":
+            continue
+        org = data.get("hiringOrganization") or {}
+        locs = data.get("jobLocation") or []
+        locs = locs if isinstance(locs, list) else [locs]
+        places = []
+        for loc in locs:
+            a = (loc or {}).get("address") or {}
+            place = ", ".join(x for x in (a.get("addressLocality"), a.get("addressRegion")) if x)
+            if place and place not in places:
+                places.append(place)
+        pay = ""
+        sal = data.get("baseSalary") or {}
+        val = sal.get("value") if isinstance(sal, dict) else None
+        if isinstance(val, dict) and (val.get("minValue") or val.get("value")):
+            lo, hi = val.get("minValue") or val.get("value"), val.get("maxValue") or val.get("minValue") or val.get("value")
+            per = {"YEAR": "a year", "HOUR": "an hour", "MONTH": "a month", "WEEK": "a week"}.get(str(val.get("unitText")).upper(), "")
+            try:
+                pay = (f"${float(lo):,.0f} {per}" if float(lo) == float(hi) else f"${float(lo):,.0f} - ${float(hi):,.0f} {per}").strip()
+            except (TypeError, ValueError):
+                pay = ""
+        remote = "remote" if str(data.get("jobLocationType") or "").upper() == "TELECOMMUTE" else None
+        closed = False
+        if data.get("validThrough"):
+            try:
+                closed = datetime.fromisoformat(str(data["validThrough"]).replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc)
+            except ValueError:
+                pass
+        etype = data.get("employmentType")
+        return {"source": "jobsnow", "id": jid, "kind": "item", "title": html.unescape(str(data.get("title") or "")),
+                "company": html.unescape(str(org.get("name") or "")) if isinstance(org, dict) else "",
+                "location": "; ".join(places[:3]), "url": url, "description": html_text(data.get("description")),
+                "pay_text": pay, "posted_text": _date(data.get("datePosted")), "remote": remote, "closed": closed,
+                "job_type": ", ".join(etype) if isinstance(etype, list) else str(etype or "").replace("_", " ").lower()}
+    return None
+
+
+def jobsnow(pick, known: set, limit: int = JOBSNOW_PER_RUN, get=None, sleep=None) -> list:
+    """New JOBS.NOW jobs whose title (read from the link) `pick(title)` wants, up to `limit` job pages a check,
+    newest first, one request a second. `known` holds the ids already read, which aren't fetched again."""
+    import time
+
+    get = get or get_text
+    sleep = time.sleep if sleep is None else sleep
+    todo = [j for j in jobsnow_listing(get) if j["id"] not in known and pick(j["slug_title"])]
+    todo.sort(key=lambda j: (j["lastmod"], j["id"]), reverse=True)
+    rows = []
+    for j in todo[:limit]:
+        sleep(JOBSNOW_DELAY)
+        try:
+            row = jobsnow_posting(get(j["url"]), j["url"], j["id"])
+        except FeedError:
+            continue
+        if row and row["title"]:
+            rows.append(row)
     return rows

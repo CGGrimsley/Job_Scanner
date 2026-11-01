@@ -10,6 +10,7 @@ page once saved.
 from __future__ import annotations
 
 import copy
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,11 +23,33 @@ DEFAULT = {
     "searches": {"keywords": [], "where": "", "radius_miles": 25},
     "usajobs": {"enabled": False, "email": "", "key": ""},
     "adzuna": {"enabled": False, "app_id": "", "app_key": ""},
+    "jobsnow": {"enabled": False},
     "email": {"enabled": False, "host": "imap.gmail.com", "port": 993, "user": "", "password": "", "folder": "INBOX"},
     "nearby": None, "auto_boards": True,
 }
 AUTO_RETRY_HOURS = 24  # a failed or empty set-up is tried again after this long
 SECRETS = (("usajobs", "key"), ("adzuna", "app_key"), ("email", "password"))
+# A USAJobs key already in the environment (a home server's .env, often shared with another federal-jobs app) is
+# used when none is saved here. It's never written to watch.json or sent to the page.
+USAJOBS_ENV = {"key": ("JOB_SCANNER_USAJOBS_KEY", "USAJOBS_API_KEY", "USAJOBS_KEY", "USAJOBS_AUTH_KEY", "USAJOBS_AUTHORIZATION_KEY"),
+               "email": ("JOB_SCANNER_USAJOBS_EMAIL", "USAJOBS_EMAIL", "USAJOBS_USER_AGENT", "USAJOBS_USER_EMAIL")}
+
+
+def usajobs_env() -> dict:
+    out = {}
+    for field, names in USAJOBS_ENV.items():
+        out[field] = next((os.environ[n].strip() for n in names if os.environ.get(n, "").strip()), "")
+    return out
+
+
+def usajobs_creds(cfg: dict) -> tuple:
+    """(key, email, on) for USAJobs: what's saved here, else the environment's. With a key from the environment
+    it's on unless it was turned off here."""
+    u, env = cfg["usajobs"], usajobs_env()
+    key, email = u["key"] or env["key"], u["email"] or env["email"]
+    saved = (store.read_json(FILE, {}).get("usajobs") or {})
+    on = u["enabled"] or (not u["key"] and bool(env["key"]) and "enabled" not in saved)
+    return key, email, bool(on and key and email)
 _lock = threading.Lock()
 _running = threading.Lock()
 
@@ -47,6 +70,10 @@ def public(cfg: dict) -> dict:
     out = copy.deepcopy(cfg)
     for section, key in SECRETS:
         out[section][key + "_set"] = bool(out[section].pop(key, ""))
+    env = usajobs_env()
+    if not out["usajobs"]["key_set"] and env["key"]:
+        _, email, on = usajobs_creds(cfg)
+        out["usajobs"].update(key_from_env=True, enabled=on, email=out["usajobs"]["email"] or env["email"])
     return out
 
 
@@ -61,7 +88,7 @@ def save(changes: dict) -> dict:
                     cfg[k] = max(lo, min(hi, int(changes[k])))
                 except (TypeError, ValueError):
                     raise ValueError(f"{k} must be a number.") from None
-        for section in ("searches", "usajobs", "adzuna", "email"):
+        for section in ("searches", "usajobs", "adzuna", "email", "jobsnow"):
             for k, v in (changes.get(section) or {}).items():
                 if k not in DEFAULT[section] or (section, k) in SECRETS and not v:
                     continue
@@ -174,18 +201,41 @@ def sources(cfg: dict, profile: dict) -> list:
     words = cfg["searches"]["keywords"] or (profile.get("target_titles") or [])[:5]
     where = cfg["searches"]["where"] or next(iter(profile.get("locations") or []), "")
     radius = cfg["searches"]["radius_miles"]
-    u, a = cfg["usajobs"], cfg["adzuna"]
-    if u["enabled"] and u["key"] and u["email"] and words:
-        out.append(("usajobs", "USAJobs", lambda want: [r for w in words for r in feeds.usajobs(u["key"], u["email"], w, where, radius)]))
+    a = cfg["adzuna"]
+    ukey, uemail, uon = usajobs_creds(cfg)
+    if uon and words:
+        out.append(("usajobs", "USAJobs", lambda want: [r for w in words for r in feeds.usajobs(ukey, uemail, w, where, radius)]))
+    if cfg["jobsnow"]["enabled"]:
+        targets = (profile.get("target_titles") or []) + (profile.get("title_aliases") or [])
+        pick = (lambda t: scoring._title_match(t, targets) >= 0.5) if targets else (lambda t: True)
+        out.append(("jobsnow", "JOBS.NOW", lambda want: _jobsnow_fetch(pick)))
     if a["enabled"] and a["app_id"] and a["app_key"] and words:
         out.append(("adzuna", "Adzuna", lambda want: [r for w in words for r in feeds.adzuna(a["app_id"], a["app_key"], w, where, radius)]))
     return out
+
+
+_ledger = {"ref": None}
+_jobsnow_read: list = []  # ids read this check, saved to watch_state.json so the ones not kept aren't read again
+
+
+def _jobsnow_fetch(pick) -> list:
+    seen = set(state().get("jobsnow_seen") or [])
+    rows = feeds.jobsnow(pick, known_ids("jobsnow") | seen)
+    _jobsnow_read.extend(r["id"] for r in rows)
+    return [r for r in rows if not r.get("closed")]
+
+
+def known_ids(source: str) -> set:
+    """Ids of a source's jobs already in the ledger, so a check doesn't fetch them again."""
+    led = _ledger["ref"]
+    return {k.split(":", 1)[1] for k in (led.jobs if led else {}) if k.startswith(source + ":")}
 
 
 def run(ledger, profile: dict, only: str | None = None, on_new=None) -> dict:
     """Check every source (or just `only`), add the jobs worth a look, and record how each source went."""
     if not _running.acquire(blocking=False):
         return {"busy": True}
+    _ledger["ref"] = ledger
     try:
         cfg, st = load(), state()
         want = lambda row: _wanted(row, profile, cfg["min_score"])  # noqa: E731
@@ -217,6 +267,9 @@ def run(ledger, profile: dict, only: str | None = None, on_new=None) -> dict:
             except (feeds.FeedError, mail.MailError) as e:
                 entry.update(ok=False, error=str(e))
             st.setdefault("sources", {})[sid] = entry
+        if _jobsnow_read:
+            st["jobsnow_seen"] = ((st.get("jobsnow_seen") or []) + _jobsnow_read)[-5000:]
+            _jobsnow_read.clear()
         st["last_run"] = jobs.now_iso()
         store.write_json(STATE, st)
         if on_new and new_keys:
@@ -241,7 +294,8 @@ def start(ledger, get_profile, on_new=None, tick: int = 60) -> threading.Thread:
         while True:
             try:
                 cfg = load()
-                if (cfg["boards"] or cfg["usajobs"]["enabled"] or cfg["adzuna"]["enabled"] or cfg["email"]["enabled"]) and due():
+                if (cfg["boards"] or usajobs_creds(cfg)[2] or cfg["adzuna"]["enabled"] or cfg["email"]["enabled"]
+                        or cfg["jobsnow"]["enabled"]) and due():
                     run(ledger, get_profile(), on_new=on_new)
             except Exception as e:  # a bad run must never stop the schedule
                 print(f"Watching: {e}")
